@@ -1,0 +1,25 @@
+# ============================================================
+# requirements.txt — Python dependencies for AI Tutor backend
+# Install with:  pip install -r requirements.txt
+# ============================================================
+
+# Web framework
+flask==3.0.3
+flask-cors==4.0.1
+
+# Environment variable loader
+python-dotenv==1.0.1
+
+# Google Gemini SDK
+google-generativeai==0.7.2
+
+# Vector database
+faiss-cpu==1.8.0          # use faiss-gpu if you have a CUDA GPU
+
+# Local sentence embeddings (free, no API key needed)
+sentence-transformers==3.0.1
+torch==2.3.1              # CPU-only build is fine for this project
+transformers==4.41.2
+
+# Numerical computing (already a dependency of the above, listed for clarity)
+numpy==1.26.4
