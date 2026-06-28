@@ -66,6 +66,9 @@ def _remove_headers_footers(text: str) -> str:
         r"NCERT.*?\n",
         r"www\.\S+",                   # any URL
         r"©.*?\n",                     # copyright line
+        r"---\s*Page\s+\d+\s*---\n?",  # PDF page-break markers
+        r"(?m)^.*\.indd\s+\d+\s*$\n?", # InDesign export footer lines
+        r"(?m)^\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}:\d{2}\s*[AP]M\s*$\n?",  # PDF export timestamp footers
     ]
     for pattern in patterns:
         text = re.sub(pattern, " ", text, flags=re.IGNORECASE)

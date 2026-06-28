@@ -3,8 +3,10 @@
 # Orchestrates RAG + Gemini to answer student questions
 # ============================================================
 
+import re
+
 from flask import Blueprint, request, jsonify
-from services.rag import search_index
+from services.rag import search_index, find_exercise_chunks
 from services.prompt_engine import build_prompt
 from services.ai_client import ask_gemini
 
@@ -14,6 +16,21 @@ chat_bp = Blueprint("chat", __name__)
 # conversational memory. Capped to keep prompt size/cost bounded.
 MAX_HISTORY_TURNS = 12
 MAX_HISTORY_TEXT_LEN = 2000
+
+# Recognise "Exercise 5.8" / "exercise no. 5.8" and "question 3" / "Q3" /
+# "problem 3" so we can look the question up directly instead of relying
+# on semantic search over noisy, PDF-extracted maths text.
+_EXERCISE_REF_RE = re.compile(r"exercise\s*(?:no\.?|number)?\s*(\d+\.\d+)", re.I)
+_QUESTION_REF_RE = re.compile(r"(?:question|problem|q)\.?\s*(?:no\.?|number)?\s*#?\s*(\d{1,2})\b", re.I)
+
+
+def _extract_exercise_reference(question: str):
+    """Return (exercise, question_no) parsed from the student's text, or (None, None)."""
+    ex_match = _EXERCISE_REF_RE.search(question)
+    if not ex_match:
+        return None, None
+    q_match = _QUESTION_REF_RE.search(question)
+    return ex_match.group(1), (q_match.group(1) if q_match else None)
 
 
 def _sanitize_history(raw_history) -> list[dict]:
@@ -43,6 +60,7 @@ def chat():
             "question": "What is photosynthesis?",
             "subject":  "science",          # maths | science | social
             "mode":     "easy",             # easy | detailed
+            "class":    "9",                # 8 | 9 | 10 (defaults to 9)
             "history":  [{"role": "user", "text": "..."}, {"role": "ai", "text": "..."}]
         }
     Returns:
@@ -54,10 +72,11 @@ def chat():
     if not data:
         return jsonify({"error": "Request body must be JSON."}), 400
 
-    question = data.get("question", "").strip()
-    subject  = data.get("subject", "science").lower().strip()
-    mode     = data.get("mode", "easy").lower().strip()
-    history  = _sanitize_history(data.get("history"))
+    question    = data.get("question", "").strip()
+    subject     = data.get("subject", "science").lower().strip()
+    mode        = data.get("mode", "easy").lower().strip()
+    student_class = str(data.get("class", "9")).strip()
+    history     = _sanitize_history(data.get("history"))
 
     if not question:
         return jsonify({"error": "Field 'question' is required."}), 400
@@ -68,9 +87,24 @@ def chat():
     if mode not in ("easy", "detailed"):
         mode = "easy"
 
+    if student_class not in ("8", "9", "10"):
+        student_class = "9"
+    standard = f"standard_{student_class}"
+
     # ── 2. Retrieve relevant chunks via RAG ───────────────
+    is_exercise_lookup = False
+    chunks = []
     try:
-        chunks = search_index(question, subject=subject, top_k=3)
+        exercise, question_no = (None, None)
+        if subject == "maths":
+            exercise, question_no = _extract_exercise_reference(question)
+
+        if exercise:
+            chunks = find_exercise_chunks(standard=standard, exercise=exercise, question_no=question_no)
+            is_exercise_lookup = bool(chunks)
+
+        if not chunks:
+            chunks = search_index(question, subject=subject, standard=standard, top_k=3)
     except FileNotFoundError as e:
         return jsonify({
             "error": str(e),
@@ -80,7 +114,10 @@ def chat():
         return jsonify({"error": f"RAG retrieval failed: {str(e)}"}), 500
 
     # ── 3. Build subject-aware prompt (includes conversation memory) ──
-    prompt = build_prompt(question, chunks, subject=subject, mode=mode, history=history)
+    prompt = build_prompt(
+        question, chunks, subject=subject, mode=mode, history=history,
+        is_exercise_lookup=is_exercise_lookup,
+    )
 
     # ── 4. Call Gemini ────────────────────────────────────
     try:

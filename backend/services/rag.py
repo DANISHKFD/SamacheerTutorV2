@@ -85,14 +85,15 @@ def _load_index():
     return _index_cache, _chunks_cache
 
 
-def search_index(query: str, subject: str = None, top_k: int = 3) -> list[str]:
+def search_index(query: str, subject: str = None, standard: str = None, top_k: int = 3) -> list[str]:
     """
     Embed the query, search FAISS, and return the top-k text chunks.
 
     Args:
-        query   : the student's question
-        subject : optional filter — only return chunks from this subject
-        top_k   : number of chunks to return
+        query    : the student's question
+        subject  : optional filter — only return chunks from this subject
+        standard : optional filter — only return chunks from this class, e.g. "standard_9"
+        top_k    : number of chunks to return
 
     Returns:
         List of chunk text strings (most relevant first)
@@ -102,23 +103,28 @@ def search_index(query: str, subject: str = None, top_k: int = 3) -> list[str]:
     # Embed the query (must match the dimension used at index-build time)
     q_vector = get_embeddings([query]).astype(np.float32)   # (1, dim)
 
-    # Fetch more candidates if we plan to filter by subject
-    fetch_k = top_k * 5 if subject else top_k
+    # Fetch more candidates if we plan to filter by subject/standard
+    fetch_k = top_k * 5 if (subject or standard) else top_k
     distances, indices = index.search(q_vector, fetch_k)
+
+    def matches_filters(chunk: dict) -> bool:
+        if subject and chunk.get("subject", "").lower() != subject.lower():
+            return False
+        if standard and chunk.get("standard", "").lower() != standard.lower():
+            return False
+        return True
 
     results = []
     for idx in indices[0]:
         if idx < 0 or idx >= len(chunks):
             continue
         chunk = chunks[idx]
-        # Optional subject filter
-        if subject and chunk.get("subject", "").lower() != subject.lower():
-            continue
-        results.append(chunk["text"])
+        if matches_filters(chunk):
+            results.append(chunk["text"])
         if len(results) >= top_k:
             break
 
-    # Fall back to unfiltered if subject filter returns nothing
+    # Fall back to unfiltered if subject/standard filter returns nothing
     if not results:
         for idx in indices[0]:
             if 0 <= idx < len(chunks):
@@ -127,3 +133,38 @@ def search_index(query: str, subject: str = None, top_k: int = 3) -> list[str]:
                 break
 
     return results
+
+
+# ─────────────────────────────────────────────────────────
+# DIRECT EXERCISE / QUESTION LOOKUP
+# ─────────────────────────────────────────────────────────
+
+def find_exercise_chunks(standard: str, exercise: str, question_no: str = None) -> list[str]:
+    """
+    Look up maths exercise questions by exact metadata match instead of
+    semantic search — much more reliable for "Exercise 5.8, Q3"-style
+    requests, since embeddings on PDF-mangled maths text are noisy.
+
+    Args:
+        standard    : e.g. "standard_9"
+        exercise    : e.g. "5.8"
+        question_no : e.g. "3" — if omitted, returns the whole exercise
+
+    Returns:
+        List of chunk text strings, or [] if that exercise isn't indexed.
+    """
+    _, chunks = _load_index()
+
+    matches = [
+        c for c in chunks
+        if c.get("exercise") == exercise and c.get("standard", "").lower() == standard.lower()
+    ]
+
+    if question_no:
+        exact = [c for c in matches if c.get("question_no") == question_no]
+        if exact:
+            return [c["text"] for c in exact]
+
+    # No exact question match (or none requested) — return the exercise's
+    # questions as context so the model can still locate the right one.
+    return [c["text"] for c in matches[:6]]

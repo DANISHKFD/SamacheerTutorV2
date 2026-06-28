@@ -31,6 +31,9 @@ const sidebarToggle   = document.getElementById("sidebarToggle");
 const overlay         = document.getElementById("overlay");
 const newChatBtn      = document.getElementById("newChatBtn");
 const chatHistoryList = document.getElementById("chatHistoryList");
+const classChips      = document.querySelectorAll(".chip");
+const themeToggle     = document.getElementById("themeToggle");
+const THEME_KEY       = "vidya_theme";
 
 /* ── App state ─────────────────────────────────────────────── */
 let lastAIAnswer  = "";   // used by "Explain Simpler"
@@ -68,12 +71,24 @@ function saveChats() {
   localStorage.setItem(CHATS_STORAGE_KEY, JSON.stringify(chats));
 }
 
+function getSelectedClass() {
+  const active = document.querySelector(".chip.active");
+  return active ? active.dataset.class : "9";
+}
+
+function setSelectedClass(classValue) {
+  classChips.forEach(chip => {
+    chip.classList.toggle("active", chip.dataset.class === classValue);
+  });
+}
+
 function makeBlankChat() {
   return {
     id: null,
     title: "New chat",
     subject: "science",
     mode: "easy",
+    studentClass: getSelectedClass(),
     messages: [],   // [{ role, text, isError }]
     history: [],    // conversationHistory snapshot
     updatedAt: Date.now()
@@ -135,6 +150,7 @@ function openChat(chatId) {
   conversationHistory = [...chat.history];
   subjectSelect.value = chat.subject;
   modeSelect.value = chat.mode;
+  setSelectedClass(chat.studentClass || "9");
   updateHeader();
 
   messagesEl.innerHTML = "";
@@ -315,8 +331,9 @@ function updateHeader() {
 async function sendQuestion(question) {
   if (!question || isLoading) return;
 
-  const subject = subjectSelect.value;
-  const mode    = modeSelect.value;
+  const subject       = subjectSelect.value;
+  const mode          = modeSelect.value;
+  const studentClass  = getSelectedClass();
 
   // Render user message
   addMessage({ role: "user", text: question });
@@ -332,7 +349,7 @@ async function sendQuestion(question) {
     const response = await fetch(`${API_BASE}/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, subject, mode, history: conversationHistory })
+      body: JSON.stringify({ question, subject, mode, class: studentClass, history: conversationHistory })
     });
 
     const data = await response.json();
@@ -353,6 +370,7 @@ async function sendQuestion(question) {
       if (currentChat.id === null) currentChat.title = makeChatTitle(question);
       currentChat.subject = subject;
       currentChat.mode = mode;
+      currentChat.studentClass = studentClass;
       currentChat.history = [...conversationHistory];
       persistCurrentChat();
     }
@@ -469,11 +487,12 @@ chatHistoryList.addEventListener("click", (e) => {
   openChat(item.dataset.id);
 });
 
-// Class chips (cosmetic — could be used to tailor prompts in future)
-document.querySelectorAll(".chip").forEach(chip => {
+// Class chips — picks which standard's textbook content (and exercises) to use
+classChips.forEach(chip => {
   chip.addEventListener("click", () => {
-    document.querySelectorAll(".chip").forEach(c => c.classList.remove("active"));
+    classChips.forEach(c => c.classList.remove("active"));
     chip.classList.add("active");
+    currentChat.studentClass = chip.dataset.class;
   });
 });
 
@@ -481,6 +500,15 @@ document.querySelectorAll(".chip").forEach(chip => {
 menuBtn.addEventListener("click", openSidebar);
 sidebarToggle.addEventListener("click", closeSidebar);
 overlay.addEventListener("click", closeSidebar);
+
+// Theme toggle (light/dark) — the actual <html data-theme> is already set
+// pre-paint by the inline script in index.html; this just flips + persists it.
+themeToggle.addEventListener("click", () => {
+  const current = document.documentElement.getAttribute("data-theme");
+  const next = current === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  localStorage.setItem(THEME_KEY, next);
+});
 
 /* ── Init ─────────────────────────────────────────────────── */
 updateHeader();

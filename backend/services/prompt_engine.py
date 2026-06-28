@@ -84,23 +84,42 @@ def _build_history_block(history: list[dict] | None) -> str:
     )
 
 
+EXERCISE_LOOKUP_INSTRUCTIONS = """
+The TEXTBOOK CONTEXT below was looked up directly by exercise/question number,
+not by topic search — it contains the exact textbook question(s) the student
+asked about.
+1. Briefly quote/restate the exact question text first, so the student can
+   confirm you found the right one (this is different from repeating their
+   conversational phrasing — here it confirms which textbook problem you're
+   solving).
+2. Then solve it step by step following the subject instructions above.
+3. If the context contains multiple questions (the exact one wasn't found),
+   politely point out which questions ARE available in that exercise instead
+   of guessing.
+"""
+
+
 def build_prompt(
     question: str,
     chunks: list[str],
     subject: str = "science",
     mode: str = "easy",
     history: list[dict] | None = None,
+    is_exercise_lookup: bool = False,
 ) -> str:
     """
     Assemble the full prompt for Gemini.
 
     Args:
-        question : the student's question
-        chunks   : list of retrieved textbook passage strings
-        subject  : "maths" | "science" | "social"
-        mode     : "easy" | "detailed"
-        history  : prior turns in this conversation, e.g.
-                   [{"role": "user", "text": "..."}, {"role": "ai", "text": "..."}]
+        question           : the student's question
+        chunks              : list of retrieved textbook passage strings
+        subject             : "maths" | "science" | "social"
+        mode                : "easy" | "detailed"
+        history             : prior turns in this conversation, e.g.
+                              [{"role": "user", "text": "..."}, {"role": "ai", "text": "..."}]
+        is_exercise_lookup  : True when `chunks` came from a direct
+                              "Exercise X.Y, Question N" metadata lookup
+                              rather than semantic search
 
     Returns:
         A single formatted prompt string.
@@ -108,6 +127,7 @@ def build_prompt(
     # Fallback if subject key not found
     subject_instr = SUBJECT_INSTRUCTIONS.get(subject, SUBJECT_INSTRUCTIONS["science"])
     mode_modifier = MODE_MODIFIERS.get(mode, MODE_MODIFIERS["easy"])
+    exercise_instr = EXERCISE_LOOKUP_INSTRUCTIONS.strip() if is_exercise_lookup else ""
 
     # Join retrieved context chunks with separator
     context_block = "\n\n---\n\n".join(
@@ -127,7 +147,7 @@ Jump straight into the answer, the way a teacher naturally would mid-conversatio
 
 === SUBJECT-SPECIFIC INSTRUCTIONS ===
 {subject_instr.strip()}
-
+{("\n=== EXERCISE LOOKUP INSTRUCTIONS ===\n" + exercise_instr + "\n") if exercise_instr else ""}
 === LANGUAGE MODE ===
 {mode_modifier}
 
