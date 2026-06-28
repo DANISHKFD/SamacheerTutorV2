@@ -10,6 +10,29 @@ from services.ai_client import ask_gemini
 
 chat_bp = Blueprint("chat", __name__)
 
+# How many prior turns (user+ai messages) to feed back to the model as
+# conversational memory. Capped to keep prompt size/cost bounded.
+MAX_HISTORY_TURNS = 12
+MAX_HISTORY_TEXT_LEN = 2000
+
+
+def _sanitize_history(raw_history) -> list[dict]:
+    """Validate and trim client-supplied history into a safe, bounded list."""
+    if not isinstance(raw_history, list):
+        return []
+
+    cleaned = []
+    for turn in raw_history[-MAX_HISTORY_TURNS:]:
+        if not isinstance(turn, dict):
+            continue
+        role = turn.get("role")
+        text = turn.get("text")
+        if role not in ("user", "ai") or not isinstance(text, str) or not text.strip():
+            continue
+        cleaned.append({"role": role, "text": text.strip()[:MAX_HISTORY_TEXT_LEN]})
+
+    return cleaned
+
 
 @chat_bp.route("/chat", methods=["POST"])
 def chat():
@@ -19,7 +42,8 @@ def chat():
         {
             "question": "What is photosynthesis?",
             "subject":  "science",          # maths | science | social
-            "mode":     "easy"              # easy | detailed
+            "mode":     "easy",             # easy | detailed
+            "history":  [{"role": "user", "text": "..."}, {"role": "ai", "text": "..."}]
         }
     Returns:
         { "answer": "...", "chunks_used": [...] }
@@ -33,6 +57,7 @@ def chat():
     question = data.get("question", "").strip()
     subject  = data.get("subject", "science").lower().strip()
     mode     = data.get("mode", "easy").lower().strip()
+    history  = _sanitize_history(data.get("history"))
 
     if not question:
         return jsonify({"error": "Field 'question' is required."}), 400
@@ -54,8 +79,8 @@ def chat():
     except Exception as e:
         return jsonify({"error": f"RAG retrieval failed: {str(e)}"}), 500
 
-    # ── 3. Build subject-aware prompt ─────────────────────
-    prompt = build_prompt(question, chunks, subject=subject, mode=mode)
+    # ── 3. Build subject-aware prompt (includes conversation memory) ──
+    prompt = build_prompt(question, chunks, subject=subject, mode=mode, history=history)
 
     # ── 4. Call Gemini ────────────────────────────────────
     try:

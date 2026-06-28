@@ -6,12 +6,13 @@
 //   - Rendering user + AI messages
 //   - "Explain Simpler" button via /api/simplify
 //   - Subject / mode selectors
-//   - Quick starter topics
+//   - Chat history (multiple conversations, stored in localStorage)
 //   - Auto-resize textarea, keyboard shortcuts
 // ============================================================
 
 /* ── Constants ─────────────────────────────────────────────── */
 const API_BASE = "http://127.0.0.1:5000/api";  // Change if deployed
+const CHATS_STORAGE_KEY = "vidya_chats_v1";
 
 /* ── DOM references ────────────────────────────────────────── */
 const messagesEl      = document.getElementById("messages");
@@ -22,17 +23,160 @@ const clearBtn        = document.getElementById("clearBtn");
 const subjectSelect   = document.getElementById("subjectSelect");
 const modeSelect      = document.getElementById("modeSelect");
 const typingIndicator = document.getElementById("typingIndicator");
-const welcomeCard     = document.getElementById("welcomeCard");
 const headerSubject   = document.getElementById("headerSubject");
 const headerMode      = document.getElementById("headerMode");
 const menuBtn         = document.getElementById("menuBtn");
 const sidebar         = document.getElementById("sidebar");
 const sidebarToggle   = document.getElementById("sidebarToggle");
 const overlay         = document.getElementById("overlay");
+const newChatBtn      = document.getElementById("newChatBtn");
+const chatHistoryList = document.getElementById("chatHistoryList");
 
 /* ── App state ─────────────────────────────────────────────── */
 let lastAIAnswer  = "";   // used by "Explain Simpler"
 let isLoading     = false;
+
+// All saved conversations, newest first. Persisted to localStorage.
+let chats = loadChats();
+// The conversation currently shown in the main view. `null` id means it
+// hasn't been saved to `chats` yet (happens once the first message is sent).
+let currentChat = makeBlankChat();
+
+// Conversation memory: sent back to the backend on every /api/chat call so
+// Gemini knows what was already discussed (follow-up questions, "explain more", etc.)
+const MAX_HISTORY_TURNS = 12; // 6 user+ai pairs
+let conversationHistory = [];
+
+function pushHistory(role, text) {
+  conversationHistory.push({ role, text });
+  if (conversationHistory.length > MAX_HISTORY_TURNS) {
+    conversationHistory = conversationHistory.slice(-MAX_HISTORY_TURNS);
+  }
+}
+
+/* ── Chat history persistence ─────────────────────────────── */
+function loadChats() {
+  try {
+    const raw = localStorage.getItem(CHATS_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveChats() {
+  localStorage.setItem(CHATS_STORAGE_KEY, JSON.stringify(chats));
+}
+
+function makeBlankChat() {
+  return {
+    id: null,
+    title: "New chat",
+    subject: "science",
+    mode: "easy",
+    messages: [],   // [{ role, text, isError }]
+    history: [],    // conversationHistory snapshot
+    updatedAt: Date.now()
+  };
+}
+
+function makeChatTitle(question) {
+  const trimmed = question.trim();
+  return trimmed.length > 40 ? trimmed.slice(0, 40) + "…" : trimmed;
+}
+
+function renderHistoryList() {
+  chatHistoryList.innerHTML = "";
+
+  if (chats.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "history-empty";
+    empty.id = "historyEmpty";
+    empty.textContent = "No previous chats yet.";
+    chatHistoryList.appendChild(empty);
+    return;
+  }
+
+  chats.forEach(chat => {
+    const item = document.createElement("button");
+    item.className = "history-item" + (chat.id === currentChat.id ? " active" : "");
+    item.dataset.id = chat.id;
+    item.innerHTML = `
+      <span class="history-item-title">${escapeHtml(chat.title)}</span>
+      <span class="history-item-meta">${new Date(chat.updatedAt).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}</span>
+    `;
+    chatHistoryList.appendChild(item);
+  });
+}
+
+/* Persist the current chat into `chats`, creating it if this is its first message. */
+function persistCurrentChat() {
+  currentChat.updatedAt = Date.now();
+
+  if (currentChat.id === null) {
+    currentChat.id = `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    chats.unshift(currentChat);
+  } else {
+    // Move to top (most recently active) and make sure the stored copy is fresh.
+    chats = chats.filter(c => c.id !== currentChat.id);
+    chats.unshift(currentChat);
+  }
+
+  saveChats();
+  renderHistoryList();
+}
+
+/* Switch the main view to a different saved chat. */
+function openChat(chatId) {
+  const chat = chats.find(c => c.id === chatId);
+  if (!chat) return;
+
+  currentChat = chat;
+  conversationHistory = [...chat.history];
+  subjectSelect.value = chat.subject;
+  modeSelect.value = chat.mode;
+  updateHeader();
+
+  messagesEl.innerHTML = "";
+  if (chat.messages.length === 0) {
+    showWelcomeCard();
+  } else {
+    chat.messages.forEach(m => addMessage(m, { skipSave: true }));
+  }
+
+  const lastAI = [...chat.messages].reverse().find(m => m.role === "ai" && !m.isError);
+  lastAIAnswer = lastAI ? lastAI.text : "";
+  simplifyBtn.disabled = !lastAIAnswer;
+
+  renderHistoryList();
+  closeSidebar();
+}
+
+/* Start a fresh, unsaved conversation. */
+function startNewChat() {
+  currentChat = makeBlankChat();
+  currentChat.subject = subjectSelect.value;
+  currentChat.mode = modeSelect.value;
+  conversationHistory = [];
+  lastAIAnswer = "";
+  simplifyBtn.disabled = true;
+
+  messagesEl.innerHTML = "";
+  showWelcomeCard();
+
+  renderHistoryList();
+  closeSidebar();
+  questionInput.focus();
+}
+
+/* Delete the chat currently open (if it was ever saved) and start a new one. */
+function deleteCurrentChat() {
+  if (currentChat.id !== null) {
+    chats = chats.filter(c => c.id !== currentChat.id);
+    saveChats();
+  }
+  startNewChat();
+}
 
 /* ── Utility: get current time string ────────────────────────── */
 function nowTime() {
@@ -88,9 +232,10 @@ function formatAIText(text) {
 }
 
 /* ── Render: add a message bubble to the chat ─────────────────── */
-function addMessage({ role, text, isError = false }) {
+function addMessage({ role, text, isError = false }, { skipSave = false } = {}) {
   // Remove welcome card on first real message
-  if (welcomeCard) welcomeCard.remove();
+  const card = document.getElementById("welcomeCard");
+  if (card) card.remove();
 
   const isUser = role === "user";
   const avatar = isUser ? "U" : "V";
@@ -114,7 +259,31 @@ function addMessage({ role, text, isError = false }) {
 
   messagesEl.appendChild(messageEl);
   scrollToBottom();
+
+  if (!skipSave) {
+    currentChat.messages.push({ role, text, isError });
+  }
+
   return messageEl;
+}
+
+/* ── Show the welcome card (used on new chat / empty chat) ────── */
+function showWelcomeCard() {
+  const card = document.createElement("div");
+  card.className = "welcome-card";
+  card.id = "welcomeCard";
+  card.innerHTML = `
+    <div class="welcome-icon">🌟</div>
+    <h2>Vanakkam! I'm Vidya</h2>
+    <p>Your AI tutor for Tamil Nadu State Board classes 8–10.<br/>
+       Ask me anything about <strong>Maths</strong>, <strong>Science</strong>, or <strong>Social Science</strong>!</p>
+    <div class="welcome-chips">
+      <span class="welcome-chip">✅ Step-by-step Maths</span>
+      <span class="welcome-chip">🔬 Science explained simply</span>
+      <span class="welcome-chip">🗺 History as stories</span>
+    </div>
+  `;
+  messagesEl.appendChild(card);
 }
 
 function escapeHtml(str) {
@@ -163,7 +332,7 @@ async function sendQuestion(question) {
     const response = await fetch(`${API_BASE}/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, subject, mode })
+      body: JSON.stringify({ question, subject, mode, history: conversationHistory })
     });
 
     const data = await response.json();
@@ -178,6 +347,14 @@ async function sendQuestion(question) {
       lastAIAnswer = data.answer;
       addMessage({ role: "ai", text: data.answer });
       simplifyBtn.disabled = false;
+      pushHistory("user", question);
+      pushHistory("ai", data.answer);
+
+      if (currentChat.id === null) currentChat.title = makeChatTitle(question);
+      currentChat.subject = subject;
+      currentChat.mode = mode;
+      currentChat.history = [...conversationHistory];
+      persistCurrentChat();
     }
 
   } catch (err) {
@@ -217,6 +394,10 @@ async function simplifyLastAnswer() {
     } else {
       lastAIAnswer = data.answer;
       addMessage({ role: "ai", text: data.answer });
+      pushHistory("user", "Can you explain that in an even simpler way?");
+      pushHistory("ai", data.answer);
+      currentChat.history = [...conversationHistory];
+      persistCurrentChat();
     }
 
   } catch (err) {
@@ -224,30 +405,6 @@ async function simplifyLastAnswer() {
   } finally {
     setLoading(false);
   }
-}
-
-/* ── Clear chat ───────────────────────────────────────────────── */
-function clearChat() {
-  messagesEl.innerHTML = "";
-  lastAIAnswer = "";
-  simplifyBtn.disabled = true;
-
-  // Re-add welcome card
-  const card = document.createElement("div");
-  card.className = "welcome-card";
-  card.id = "welcomeCard";
-  card.innerHTML = `
-    <div class="welcome-icon">🌟</div>
-    <h2>Vanakkam! I'm Vidya</h2>
-    <p>Your AI tutor for Tamil Nadu State Board classes 8–10.<br/>
-       Ask me anything about <strong>Maths</strong>, <strong>Science</strong>, or <strong>Social Science</strong>!</p>
-    <div class="welcome-chips">
-      <span class="welcome-chip">✅ Step-by-step Maths</span>
-      <span class="welcome-chip">🔬 Science explained simply</span>
-      <span class="welcome-chip">🗺 History as stories</span>
-    </div>
-  `;
-  messagesEl.appendChild(card);
 }
 
 /* ── Sidebar toggle (mobile) ──────────────────────────────────── */
@@ -289,30 +446,27 @@ sendBtn.addEventListener("click", () => {
 // Simplify button
 simplifyBtn.addEventListener("click", simplifyLastAnswer);
 
-// Clear chat
-clearBtn.addEventListener("click", clearChat);
+// Delete current chat
+clearBtn.addEventListener("click", deleteCurrentChat);
 
-// Dropdown changes → update header
-subjectSelect.addEventListener("change", updateHeader);
-modeSelect.addEventListener("change", updateHeader);
-
-// Quick starter buttons
-document.getElementById("starters").addEventListener("click", (e) => {
-  const btn = e.target.closest(".starter-btn");
-  if (!btn) return;
-  const q = btn.dataset.q;
-  questionInput.value = q;
-  autoResize();
-  sendBtn.disabled = false;
-  // Auto-set subject based on question content
-  if (/photosynthesis|newton|motion/i.test(q)) subjectSelect.value = "science";
-  else if (/pythagoras|area|circle/i.test(q)) subjectSelect.value = "maths";
-  else if (/revolution|constitution/i.test(q)) subjectSelect.value = "social";
+// Dropdown changes → update header + keep current chat's saved subject/mode in sync
+subjectSelect.addEventListener("change", () => {
   updateHeader();
-  // Close sidebar on mobile
-  closeSidebar();
-  // Focus input
-  questionInput.focus();
+  currentChat.subject = subjectSelect.value;
+});
+modeSelect.addEventListener("change", () => {
+  updateHeader();
+  currentChat.mode = modeSelect.value;
+});
+
+// New chat button
+newChatBtn.addEventListener("click", startNewChat);
+
+// Chat history list — click an item to open it
+chatHistoryList.addEventListener("click", (e) => {
+  const item = e.target.closest(".history-item");
+  if (!item) return;
+  openChat(item.dataset.id);
 });
 
 // Class chips (cosmetic — could be used to tailor prompts in future)
@@ -330,4 +484,5 @@ overlay.addEventListener("click", closeSidebar);
 
 /* ── Init ─────────────────────────────────────────────────── */
 updateHeader();
+renderHistoryList();
 questionInput.focus();
