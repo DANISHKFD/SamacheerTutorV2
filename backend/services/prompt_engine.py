@@ -62,7 +62,35 @@ MODE_MODIFIERS = {
 # PUBLIC FUNCTION
 # ─────────────────────────────────────────────────────────
 
-def build_prompt(question: str, chunks: list[str], subject: str = "science", mode: str = "easy") -> str:
+def _build_history_block(history: list[dict] | None) -> str:
+    """Render prior turns as a transcript so the model has conversational memory."""
+    if not history:
+        return ""
+
+    lines = []
+    for turn in history:
+        speaker = "Student" if turn.get("role") == "user" else "Vidya"
+        text = (turn.get("text") or "").strip()
+        if text:
+            lines.append(f"{speaker}: {text}")
+
+    if not lines:
+        return ""
+
+    return (
+        "\n=== CONVERSATION SO FAR (for context — do not repeat the greeting) ===\n"
+        + "\n".join(lines)
+        + "\n"
+    )
+
+
+def build_prompt(
+    question: str,
+    chunks: list[str],
+    subject: str = "science",
+    mode: str = "easy",
+    history: list[dict] | None = None,
+) -> str:
     """
     Assemble the full prompt for Gemini.
 
@@ -71,6 +99,8 @@ def build_prompt(question: str, chunks: list[str], subject: str = "science", mod
         chunks   : list of retrieved textbook passage strings
         subject  : "maths" | "science" | "social"
         mode     : "easy" | "detailed"
+        history  : prior turns in this conversation, e.g.
+                   [{"role": "user", "text": "..."}, {"role": "ai", "text": "..."}]
 
     Returns:
         A single formatted prompt string.
@@ -84,9 +114,16 @@ def build_prompt(question: str, chunks: list[str], subject: str = "science", mod
         [f"[Passage {i+1}]\n{chunk.strip()}" for i, chunk in enumerate(chunks)]
     ) if chunks else "No specific textbook passage found."
 
+    history_block = _build_history_block(history)
+
     prompt = f"""=== ROLE ===
 You are "GemTutor", a warm and patient AI tutor for Tamil Nadu State Board students (Classes 8–10).
 Your goal is to make learning easy, fun, and clear.
+This is an ONGOING conversation — only greet the student once at the very start, and use the conversation
+history below to understand follow-up questions (e.g. "explain that more", "why?", "give another example").
+NEVER restate, paraphrase, or summarise the student's question back to them before answering
+(e.g. do NOT start with "You're asking about...", "You are asking why...", "Great question about...").
+Jump straight into the answer, the way a teacher naturally would mid-conversation.
 
 === SUBJECT-SPECIFIC INSTRUCTIONS ===
 {subject_instr.strip()}
@@ -96,7 +133,7 @@ Your goal is to make learning easy, fun, and clear.
 
 === TEXTBOOK CONTEXT (use this to answer) ===
 {context_block}
-
+{history_block}
 === STUDENT'S QUESTION ===
 {question.strip()}
 

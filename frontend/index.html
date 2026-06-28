@@ -41,6 +41,14 @@
       <button class="sidebar-toggle" id="sidebarToggle" aria-label="Close sidebar">✕</button>
     </div>
 
+    <!-- New chat -->
+    <div class="new-chat-wrap">
+      <button class="new-chat-btn" id="newChatBtn">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="10" y1="4" x2="10" y2="16"/><line x1="4" y1="10" x2="16" y2="10"/></svg>
+        New Chat
+      </button>
+    </div>
+
     <!-- Subject selector -->
     <div class="control-group">
       <label class="control-label" for="subjectSelect">📚 Subject</label>
@@ -76,21 +84,16 @@
       </div>
     </div>
 
-    <!-- Quick topic starters -->
-    <div class="control-group starters-group">
-      <label class="control-label">⚡ Quick Topics</label>
-      <div class="starters" id="starters">
-        <button class="starter-btn" data-q="What is photosynthesis?">Photosynthesis</button>
-        <button class="starter-btn" data-q="Explain the Pythagoras theorem with an example.">Pythagoras</button>
-        <button class="starter-btn" data-q="What caused the French Revolution?">French Revolution</button>
-        <button class="starter-btn" data-q="What is Newton's second law of motion?">Newton's Laws</button>
-        <button class="starter-btn" data-q="How do we find the area of a circle?">Area of Circle</button>
-        <button class="starter-btn" data-q="What is the Indian Constitution?">Indian Constitution</button>
+    <!-- Chat history -->
+    <div class="control-group history-group">
+      <label class="control-label">🕘 Chat History</label>
+      <div class="chat-history-list" id="chatHistoryList">
+        <p class="history-empty" id="historyEmpty">No previous chats yet.</p>
       </div>
     </div>
 
     <div class="sidebar-footer">
-      <button class="clear-btn" id="clearBtn">🗑 Clear Chat</button>
+      <button class="clear-btn" id="clearBtn">🗑 Delete This Chat</button>
       <p class="footer-note">Powered by Gemini + Samacheer Kalvi</p>
     </div>
   </aside>

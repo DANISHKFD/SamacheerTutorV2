@@ -207,34 +207,101 @@ body {
   box-shadow: 0 2px 12px rgba(255,107,53,0.35);
 }
 
-/* Quick starter buttons */
-.starters-group { padding-bottom: 16px; }
-
-.starters {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+/* New chat button */
+.new-chat-wrap {
+  padding: 16px 20px 4px;
 }
 
-.starter-btn {
-  background: rgba(131,197,190,0.1);
-  border: 1px solid rgba(131,197,190,0.2);
-  border-radius: 8px;
-  color: var(--teal-lt);
+.new-chat-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 11px;
+  background: var(--saffron);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: white;
   font-family: var(--font-body);
-  font-size: 0.82rem;
-  font-weight: 600;
-  padding: 8px 12px;
+  font-size: 0.88rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+  box-shadow: 0 2px 10px rgba(255,107,53,0.3);
+}
+
+.new-chat-btn svg { width: 16px; height: 16px; }
+
+.new-chat-btn:hover {
+  background: var(--saffron-dk);
+}
+
+/* Chat history list */
+.history-group {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  border-bottom: none;
+}
+
+.chat-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.history-empty {
+  font-size: 0.8rem;
+  color: rgba(255,255,255,0.3);
+  padding: 8px 2px;
+}
+
+.history-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: rgba(255,255,255,0.75);
+  padding: 8px 10px;
   text-align: left;
   cursor: pointer;
   transition: all 0.2s;
+  width: 100%;
 }
 
-.starter-btn:hover {
-  background: rgba(131,197,190,0.2);
-  border-color: var(--teal-lt);
+.history-item:hover {
+  background: rgba(255,255,255,0.06);
+}
+
+.history-item.active {
+  background: rgba(255,107,53,0.15);
+  border-color: rgba(255,107,53,0.3);
   color: white;
-  transform: translateX(4px);
+}
+
+.history-item-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-item-meta {
+  font-size: 0.65rem;
+  color: rgba(255,255,255,0.35);
+}
+
+.history-item.active .history-item-meta {
+  color: rgba(255,255,255,0.55);
 }
 
 /* Sidebar footer */
@@ -562,6 +629,8 @@ body {
   padding: 0 20px 8px;
   animation: fadeSlideUp 0.3s ease both;
 }
+
+.typing-indicator[hidden] { display: none; }
 
 .typing-avatar {
   width: 36px;

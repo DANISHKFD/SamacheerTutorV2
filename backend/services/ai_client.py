@@ -10,33 +10,43 @@ import google.generativeai as genai
 from config import Config
 
 
-# ── Configure the Gemini SDK once at import time ──────────
-_api_key = Config.GEMINI_API_KEY
-if not _api_key:
-    raise EnvironmentError(
-        "GEMINI_API_KEY is not set. "
-        "Copy .env.example → .env and add your key."
+# ── Model setup (lazy) ─────────────────────────────────────
+# Configuring the SDK / creating the model at import time means a missing
+# API key crashes the entire Flask app before it can even start. Instead we
+# build the model lazily on first use so the app boots and surfaces a clean
+# per-request error if the key is missing.
+_model = None
+
+
+def _get_model():
+    global _model
+    if _model is not None:
+        return _model
+
+    api_key = Config.GEMINI_API_KEY
+    if not api_key:
+        raise EnvironmentError(
+            "GEMINI_API_KEY is not set. "
+            "Copy .env.example → .env and add your key."
+        )
+
+    genai.configure(api_key=api_key)
+    _model = genai.GenerativeModel(
+        model_name="gemini-2.5-flash-lite",
+        generation_config={
+            "temperature": 0.4,       # lower = more factual, less hallucination
+            "top_p": 0.9,
+            "max_output_tokens": 1024,
+        },
+        safety_settings=[
+            # Keep the default safety settings; students use this app
+            {"category": "HARM_CATEGORY_HARASSMENT",        "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH",       "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+        ]
     )
-
-genai.configure(api_key=_api_key)
-
-# ── Model setup ───────────────────────────────────────────
-# gemini-1.5-flash: fast + cheap, perfect for educational Q&A
-_model = genai.GenerativeModel(
-    model_name="gemini-2.5-flash-lite",
-    generation_config={
-        "temperature": 0.4,       # lower = more factual, less hallucination
-        "top_p": 0.9,
-        "max_output_tokens": 1024,
-    },
-    safety_settings=[
-        # Keep the default safety settings; students use this app
-        {"category": "HARM_CATEGORY_HARASSMENT",        "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-        {"category": "HARM_CATEGORY_HATE_SPEECH",       "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-    ]
-)
+    return _model
 
 
 def ask_gemini(prompt: str) -> str:
@@ -53,7 +63,8 @@ def ask_gemini(prompt: str) -> str:
         RuntimeError if the API call fails or returns empty content.
     """
     try:
-        response = _model.generate_content(prompt)
+        model = _get_model()
+        response = model.generate_content(prompt)
 
         # Extract text safely
         if response.parts:
