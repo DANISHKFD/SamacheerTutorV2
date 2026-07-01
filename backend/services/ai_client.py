@@ -6,8 +6,28 @@
 # ============================================================
 
 import os
+import time
+
 import google.generativeai as genai
+from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable
 from config import Config
+
+# ── Retry/backoff for transient errors (429 RPM bursts, 503 server hiccups) ──
+# Does NOT help once the daily free-tier quota is exhausted — Gemini's
+# retry_delay for that case is short (~seconds) but the request will keep
+# failing until the quota resets, so we still give up after MAX_RETRIES.
+MAX_RETRIES = 3
+BACKOFF_BASE_SECONDS = 2
+RETRYABLE_EXCEPTIONS = (ResourceExhausted, ServiceUnavailable)
+
+
+def _retry_delay_seconds(exc: Exception, attempt: int) -> float:
+    """Use the server-suggested retry_delay if present, else exponential backoff."""
+    for detail in exc.details:
+        retry_delay = getattr(detail, "retry_delay", None)
+        if retry_delay is not None:
+            return retry_delay.seconds + retry_delay.nanos / 1e9
+    return BACKOFF_BASE_SECONDS ** attempt
 
 
 # ── Model setup (lazy) ─────────────────────────────────────
@@ -62,21 +82,28 @@ def ask_gemini(prompt: str) -> str:
     Raises:
         RuntimeError if the API call fails or returns empty content.
     """
-    try:
-        model = _get_model()
-        response = model.generate_content(prompt)
+    model = _get_model()
 
-        # Extract text safely
-        if response.parts:
-            return response.text.strip()
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = model.generate_content(prompt)
 
-        # If model was blocked by safety filters
-        finish_reason = response.candidates[0].finish_reason if response.candidates else "UNKNOWN"
-        raise RuntimeError(
-            f"Gemini returned no content. finish_reason={finish_reason}. "
-            "The question may have been blocked by safety filters."
-        )
+            # Extract text safely
+            if response.parts:
+                return response.text.strip()
 
-    except Exception as exc:
-        # Re-raise with a clean message so the route can surface it to the user
-        raise RuntimeError(f"Gemini API call failed: {exc}") from exc
+            # If model was blocked by safety filters
+            finish_reason = response.candidates[0].finish_reason if response.candidates else "UNKNOWN"
+            raise RuntimeError(
+                f"Gemini returned no content. finish_reason={finish_reason}. "
+                "The question may have been blocked by safety filters."
+            )
+
+        except RETRYABLE_EXCEPTIONS as exc:
+            if attempt == MAX_RETRIES:
+                raise RuntimeError(f"Gemini API call failed: {exc}") from exc
+            time.sleep(_retry_delay_seconds(exc, attempt))
+
+        except Exception as exc:
+            # Re-raise with a clean message so the route can surface it to the user
+            raise RuntimeError(f"Gemini API call failed: {exc}") from exc
