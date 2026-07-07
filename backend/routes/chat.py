@@ -17,6 +17,11 @@ chat_bp = Blueprint("chat", __name__)
 MAX_HISTORY_TURNS = 12
 MAX_HISTORY_TEXT_LEN = 2000
 
+# Same idea, but for snippets pulled from the student's OTHER saved chats
+# (cross-chat memory) — kept smaller since it's background, not the live turn.
+MAX_CROSS_CHAT_ENTRIES = 12
+MAX_CHAT_TITLE_LEN = 80
+
 # Recognise "Exercise 5.8" / "exercise no. 5.8" and "question 3" / "Q3" /
 # "problem 3" so we can look the question up directly instead of relying
 # on semantic search over noisy, PDF-extracted maths text.
@@ -51,6 +56,29 @@ def _sanitize_history(raw_history) -> list[dict]:
     return cleaned
 
 
+def _sanitize_cross_chat_memory(raw_memory) -> list[dict]:
+    """Validate and trim client-supplied cross-chat memory into a safe, bounded list."""
+    if not isinstance(raw_memory, list):
+        return []
+
+    cleaned = []
+    for turn in raw_memory[-MAX_CROSS_CHAT_ENTRIES:]:
+        if not isinstance(turn, dict):
+            continue
+        role = turn.get("role")
+        text = turn.get("text")
+        if role not in ("user", "ai") or not isinstance(text, str) or not text.strip():
+            continue
+
+        entry = {"role": role, "text": text.strip()[:MAX_HISTORY_TEXT_LEN]}
+        title = turn.get("chatTitle")
+        if isinstance(title, str) and title.strip():
+            entry["chatTitle"] = title.strip()[:MAX_CHAT_TITLE_LEN]
+        cleaned.append(entry)
+
+    return cleaned
+
+
 @chat_bp.route("/chat", methods=["POST"])
 def chat():
     """
@@ -62,7 +90,8 @@ def chat():
             "mode":     "easy",             # easy | detailed
             "language": "english",          # english | tamil — language of the answer
             "class":    "9",                # 8 | 9 | 10 (defaults to 9)
-            "history":  [{"role": "user", "text": "..."}, {"role": "ai", "text": "..."}]
+            "history":  [{"role": "user", "text": "..."}, {"role": "ai", "text": "..."}],
+            "crossChatMemory": [{"role": "user", "text": "...", "chatTitle": "..."}]
         }
     Returns:
         { "answer": "...", "chunks_used": [...] }
@@ -79,6 +108,7 @@ def chat():
     language    = data.get("language", "english").lower().strip()
     student_class = str(data.get("class", "9")).strip()
     history     = _sanitize_history(data.get("history"))
+    cross_chat_memory = _sanitize_cross_chat_memory(data.get("crossChatMemory"))
 
     if not question:
         return jsonify({"error": "Field 'question' is required."}), 400
@@ -121,7 +151,7 @@ def chat():
     # ── 3. Build subject-aware prompt (includes conversation memory) ──
     prompt = build_prompt(
         question, chunks, subject=subject, mode=mode, language=language, history=history,
-        is_exercise_lookup=is_exercise_lookup,
+        cross_chat_memory=cross_chat_memory, is_exercise_lookup=is_exercise_lookup,
     )
 
     # ── 4. Call Gemini ────────────────────────────────────

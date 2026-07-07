@@ -64,6 +64,52 @@ function pushHistory(role, text) {
   }
 }
 
+/* ── Cross-chat memory ─────────────────────────────────────────
+   A rolling log of messages from EVERY saved chat (not just the one
+   currently open), so the tutor can recall things discussed in other
+   sessions — e.g. "like you explained in my triangle chat yesterday".
+   `history`/conversationHistory above only covers the current chat;
+   this is the cross-chat counterpart, sent alongside it as background
+   context (see prompt_engine.py's cross-chat block). */
+const GLOBAL_MEMORY_KEY = "vidya_global_memory_v1";
+const MAX_GLOBAL_MEMORY_ENTRIES = 40; // stored cap, ~20 turns across all chats
+const CROSS_CHAT_CONTEXT_LIMIT = 12;  // cap on what's actually sent per request
+
+function loadGlobalMemory() {
+  try {
+    const raw = localStorage.getItem(GLOBAL_MEMORY_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveGlobalMemory(memory) {
+  localStorage.setItem(GLOBAL_MEMORY_KEY, JSON.stringify(memory));
+}
+
+// Only messages that belong to an actually-saved chat are remembered, so a
+// chat abandoned before its first successful reply never enters memory.
+function pushGlobalMemory(chatId, chatTitle, role, text) {
+  if (!chatId) return;
+  const memory = loadGlobalMemory();
+  memory.push({ chatId, chatTitle, role, text, ts: Date.now() });
+  saveGlobalMemory(memory.slice(-MAX_GLOBAL_MEMORY_ENTRIES));
+}
+
+// Everything remembered EXCEPT the chat currently open (that part already
+// travels via conversationHistory/`history`, so this avoids duplicating it).
+function getCrossChatMemory(currentChatId) {
+  return loadGlobalMemory()
+    .filter(m => m.chatId !== currentChatId)
+    .slice(-CROSS_CHAT_CONTEXT_LIMIT)
+    .map(({ role, text, chatTitle }) => ({ role, text, chatTitle }));
+}
+
+function purgeGlobalMemoryForChat(chatId) {
+  saveGlobalMemory(loadGlobalMemory().filter(m => m.chatId !== chatId));
+}
+
 /* ── Chat history persistence ─────────────────────────────── */
 function loadChats() {
   try {
@@ -207,6 +253,7 @@ function startNewChat() {
 function deleteChat(chatId) {
   chats = chats.filter(c => c.id !== chatId);
   saveChats();
+  purgeGlobalMemoryForChat(chatId); // don't let a deleted chat keep leaking into cross-chat memory
 
   if (currentChat.id === chatId) {
     startNewChat();
@@ -370,10 +417,14 @@ async function sendQuestion(question) {
   setLoading(true);
 
   try {
+    const crossChatMemory = getCrossChatMemory(currentChat.id);
     const response = await fetch(`${API_BASE}/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, subject, mode, language, class: studentClass, history: conversationHistory })
+      body: JSON.stringify({
+        question, subject, mode, language, class: studentClass,
+        history: conversationHistory, crossChatMemory
+      })
     });
 
     const data = await response.json();
@@ -398,6 +449,9 @@ async function sendQuestion(question) {
       currentChat.studentClass = studentClass;
       currentChat.history = [...conversationHistory];
       persistCurrentChat();
+
+      pushGlobalMemory(currentChat.id, currentChat.title, "user", question);
+      pushGlobalMemory(currentChat.id, currentChat.title, "ai", data.answer);
     }
 
   } catch (err) {
@@ -442,6 +496,9 @@ async function simplifyLastAnswer() {
       pushHistory("ai", data.answer);
       currentChat.history = [...conversationHistory];
       persistCurrentChat();
+
+      pushGlobalMemory(currentChat.id, currentChat.title, "user", "Can you explain that in an even simpler way?");
+      pushGlobalMemory(currentChat.id, currentChat.title, "ai", data.answer);
     }
 
   } catch (err) {
