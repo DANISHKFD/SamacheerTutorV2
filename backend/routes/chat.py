@@ -7,7 +7,7 @@ import re
 
 from flask import Blueprint, request, jsonify
 from services.rag import search_index, find_exercise_chunks
-from services.prompt_engine import build_prompt
+from services.prompt_engine import build_prompt, get_language_instruction
 from services.ai_client import ask_gemini
 
 chat_bp = Blueprint("chat", __name__)
@@ -60,6 +60,7 @@ def chat():
             "question": "What is photosynthesis?",
             "subject":  "science",          # maths | science | social
             "mode":     "easy",             # easy | detailed
+            "language": "english",          # english | tamil — language of the answer
             "class":    "9",                # 8 | 9 | 10 (defaults to 9)
             "history":  [{"role": "user", "text": "..."}, {"role": "ai", "text": "..."}]
         }
@@ -75,6 +76,7 @@ def chat():
     question    = data.get("question", "").strip()
     subject     = data.get("subject", "science").lower().strip()
     mode        = data.get("mode", "easy").lower().strip()
+    language    = data.get("language", "english").lower().strip()
     student_class = str(data.get("class", "9")).strip()
     history     = _sanitize_history(data.get("history"))
 
@@ -86,6 +88,9 @@ def chat():
 
     if mode not in ("easy", "detailed"):
         mode = "easy"
+
+    if language not in ("english", "tamil"):
+        language = "english"
 
     if student_class not in ("8", "9", "10"):
         student_class = "9"
@@ -115,7 +120,7 @@ def chat():
 
     # ── 3. Build subject-aware prompt (includes conversation memory) ──
     prompt = build_prompt(
-        question, chunks, subject=subject, mode=mode, history=history,
+        question, chunks, subject=subject, mode=mode, language=language, history=history,
         is_exercise_lookup=is_exercise_lookup,
     )
 
@@ -136,7 +141,7 @@ def simplify():
     """
     POST /api/simplify
     Takes an existing AI answer and makes it even simpler.
-    Request body: { "text": "...", "subject": "science" }
+    Request body: { "text": "...", "subject": "science", "language": "english" }
     """
     data = request.get_json(silent=True)
     if not data or not data.get("text"):
@@ -144,12 +149,16 @@ def simplify():
 
     original = data["text"].strip()
     subject  = data.get("subject", "science")
+    language = data.get("language", "english").lower().strip()
+    if language not in ("english", "tamil"):
+        language = "english"
 
     simplify_prompt = (
         f"You are a friendly teacher for Tamil Nadu State Board class 8-10 students.\n"
-        f"Re-explain the following answer in the SIMPLEST possible English. "
+        f"Re-explain the following answer in the SIMPLEST possible terms. "
         f"Use very short sentences. Avoid difficult words. "
         f"If it is a {subject} topic, keep the style appropriate.\n\n"
+        f"{get_language_instruction(language)}\n\n"
         f"Original answer:\n{original}\n\n"
         f"Simplified answer:"
     )

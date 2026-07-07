@@ -57,6 +57,26 @@ MODE_MODIFIERS = {
     )
 }
 
+# ── Response language ────────────────────────────────────────
+
+LANGUAGE_INSTRUCTIONS = {
+    "english": "Write your entire answer in clear, simple English.",
+    "tamil": (
+        "Write your ENTIRE answer in Tamil (தமிழ்), using natural, everyday Tamil "
+        "that a Class 8–10 Tamil Nadu student speaks at home and in school. "
+        "Do not mix in English sentences or paragraphs. "
+        "You may keep numbers, mathematical symbols/formulas, and proper nouns "
+        "(e.g. names, place names) as-is, but explain everything else fully in Tamil, "
+        "including subject terms — give the Tamil term and, in brackets, the English "
+        "term the student would see in their textbook, e.g. ஒளிச்சேர்க்கை (Photosynthesis)."
+    ),
+}
+
+
+def get_language_instruction(language: str) -> str:
+    """Return the response-language instruction block for the given language code."""
+    return LANGUAGE_INSTRUCTIONS.get(language, LANGUAGE_INSTRUCTIONS["english"])
+
 
 # ─────────────────────────────────────────────────────────
 # PUBLIC FUNCTION
@@ -104,6 +124,7 @@ def build_prompt(
     chunks: list[str],
     subject: str = "science",
     mode: str = "easy",
+    language: str = "english",
     history: list[dict] | None = None,
     is_exercise_lookup: bool = False,
 ) -> str:
@@ -115,6 +136,7 @@ def build_prompt(
         chunks              : list of retrieved textbook passage strings
         subject             : "maths" | "science" | "social"
         mode                : "easy" | "detailed"
+        language            : "english" | "tamil" — language of the answer itself
         history             : prior turns in this conversation, e.g.
                               [{"role": "user", "text": "..."}, {"role": "ai", "text": "..."}]
         is_exercise_lookup  : True when `chunks` came from a direct
@@ -127,6 +149,7 @@ def build_prompt(
     # Fallback if subject key not found
     subject_instr = SUBJECT_INSTRUCTIONS.get(subject, SUBJECT_INSTRUCTIONS["science"])
     mode_modifier = MODE_MODIFIERS.get(mode, MODE_MODIFIERS["easy"])
+    language_instr = get_language_instruction(language)
     exercise_instr = EXERCISE_LOOKUP_INSTRUCTIONS.strip() if is_exercise_lookup else ""
 
     # Join retrieved context chunks with separator
@@ -148,8 +171,11 @@ Jump straight into the answer, the way a teacher naturally would mid-conversatio
 === SUBJECT-SPECIFIC INSTRUCTIONS ===
 {subject_instr.strip()}
 {("\n=== EXERCISE LOOKUP INSTRUCTIONS ===\n" + exercise_instr + "\n") if exercise_instr else ""}
-=== LANGUAGE MODE ===
+=== ANSWER DEPTH ===
 {mode_modifier}
+
+=== RESPONSE LANGUAGE ===
+{language_instr}
 
 === TEXTBOOK CONTEXT (use this to answer) ===
 {context_block}

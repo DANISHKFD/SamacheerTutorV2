@@ -19,9 +19,9 @@ const messagesEl      = document.getElementById("messages");
 const questionInput   = document.getElementById("questionInput");
 const sendBtn         = document.getElementById("sendBtn");
 const simplifyBtn     = document.getElementById("simplifyBtn");
-const clearBtn        = document.getElementById("clearBtn");
 const subjectSelect   = document.getElementById("subjectSelect");
 const modeSelect      = document.getElementById("modeSelect");
+const languageSelect  = document.getElementById("languageSelect");
 const typingIndicator = document.getElementById("typingIndicator");
 const headerSubject   = document.getElementById("headerSubject");
 const headerMode      = document.getElementById("headerMode");
@@ -34,6 +34,13 @@ const chatHistoryList = document.getElementById("chatHistoryList");
 const classChips      = document.querySelectorAll(".chip");
 const themeToggle     = document.getElementById("themeToggle");
 const THEME_KEY       = "vidya_theme";
+const blobs           = document.querySelectorAll(".blob");
+const settingsBtn      = document.getElementById("settingsBtn");
+const settingsOverlay  = document.getElementById("settingsOverlay");
+const settingsCloseBtn = document.getElementById("settingsCloseBtn");
+const SIDEBAR_KEY      = "vidya_sidebar_collapsed";
+
+let messageCount = 0; // drives the staggered pop-in delay on new bubbles
 
 /* ── App state ─────────────────────────────────────────────── */
 let lastAIAnswer  = "";   // used by "Explain Simpler"
@@ -88,6 +95,7 @@ function makeBlankChat() {
     title: "New chat",
     subject: "science",
     mode: "easy",
+    language: "english",
     studentClass: getSelectedClass(),
     messages: [],   // [{ role, text, isError }]
     history: [],    // conversationHistory snapshot
@@ -113,12 +121,18 @@ function renderHistoryList() {
   }
 
   chats.forEach(chat => {
-    const item = document.createElement("button");
+    const item = document.createElement("div");
     item.className = "history-item" + (chat.id === currentChat.id ? " active" : "");
     item.dataset.id = chat.id;
+    item.setAttribute("role", "button");
+    item.setAttribute("tabindex", "0");
     item.innerHTML = `
       <span class="history-item-title">${escapeHtml(chat.title)}</span>
-      <span class="history-item-meta">${new Date(chat.updatedAt).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}</span>
+      <button class="history-delete-btn" data-id="${chat.id}" aria-label="Delete this chat" title="Delete chat">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 6h12M8 6V4.5a1 1 0 011-1h2a1 1 0 011 1V6m-7 0 .6 9.4a1.5 1.5 0 001.5 1.4h4.8a1.5 1.5 0 001.5-1.4L15 6"/>
+        </svg>
+      </button>
     `;
     chatHistoryList.appendChild(item);
   });
@@ -150,10 +164,12 @@ function openChat(chatId) {
   conversationHistory = [...chat.history];
   subjectSelect.value = chat.subject;
   modeSelect.value = chat.mode;
+  languageSelect.value = chat.language || "english"; // older saved chats predate this field
   setSelectedClass(chat.studentClass || "9");
   updateHeader();
 
   messagesEl.innerHTML = "";
+  messageCount = 0;
   if (chat.messages.length === 0) {
     showWelcomeCard();
   } else {
@@ -173,11 +189,13 @@ function startNewChat() {
   currentChat = makeBlankChat();
   currentChat.subject = subjectSelect.value;
   currentChat.mode = modeSelect.value;
+  currentChat.language = languageSelect.value;
   conversationHistory = [];
   lastAIAnswer = "";
   simplifyBtn.disabled = true;
 
   messagesEl.innerHTML = "";
+  messageCount = 0;
   showWelcomeCard();
 
   renderHistoryList();
@@ -185,13 +203,16 @@ function startNewChat() {
   questionInput.focus();
 }
 
-/* Delete the chat currently open (if it was ever saved) and start a new one. */
-function deleteCurrentChat() {
-  if (currentChat.id !== null) {
-    chats = chats.filter(c => c.id !== currentChat.id);
-    saveChats();
+/* Delete any saved chat by id. If it's the one currently open, start fresh. */
+function deleteChat(chatId) {
+  chats = chats.filter(c => c.id !== chatId);
+  saveChats();
+
+  if (currentChat.id === chatId) {
+    startNewChat();
+  } else {
+    renderHistoryList();
   }
-  startNewChat();
 }
 
 /* ── Utility: get current time string ────────────────────────── */
@@ -226,22 +247,22 @@ function formatAIText(text) {
 
   // Numbered steps: "1." at start of line → styled
   html = html.replace(/^(\d+)\.\s+/gm, (_, n) =>
-    `<span style="color:var(--saffron);font-weight:700;margin-right:6px">${n}.</span>`
+    `<span style="color:var(--accent-soft-text);font-weight:700;margin-right:6px">${n}.</span>`
   );
 
   // Bullet lines: "•" or "- " at start of line
   html = html.replace(/^[•\-]\s+/gm,
-    `<span style="color:var(--teal);font-weight:700;margin-right:6px">▸</span>`
+    `<span style="color:var(--accent-soft-text);font-weight:700;margin-right:6px">▸</span>`
   );
 
   // Wrap "Key Points:" section
   html = html.replace(/(Key Points?:)/gi,
-    `<strong style="color:var(--teal);display:block;margin-top:10px;margin-bottom:2px">$1</strong>`
+    `<strong style="color:var(--accent-soft-text);display:block;margin-top:10px;margin-bottom:2px">$1</strong>`
   );
 
   // Final Answer label
   html = html.replace(/(Final Answer:?)/gi,
-    `<strong style="color:var(--saffron-dk);display:block;margin-top:10px">$1</strong>`
+    `<strong style="color:var(--accent-soft-text);display:block;margin-top:10px">$1</strong>`
   );
 
   return html;
@@ -259,6 +280,7 @@ function addMessage({ role, text, isError = false }, { skipSave = false } = {}) 
 
   const messageEl = document.createElement("div");
   messageEl.className = `message ${role}`;
+  messageEl.style.setProperty("--i", messageCount++ % 6); // stagger entrance, cap the delay
 
   const bubbleContent = isUser
     ? escapeHtml(text)           // user text: plain escaped
@@ -321,10 +343,11 @@ function setLoading(state) {
 
 /* ── Update header labels when controls change ────────────────── */
 function updateHeader() {
-  const subjectLabel = subjectSelect.options[subjectSelect.selectedIndex].text;
-  const modeLabel    = modeSelect.options[modeSelect.selectedIndex].text;
+  const subjectLabel  = subjectSelect.options[subjectSelect.selectedIndex].text;
+  const modeLabel     = modeSelect.options[modeSelect.selectedIndex].text;
+  const languageLabel = languageSelect.options[languageSelect.selectedIndex].text;
   headerSubject.textContent = subjectLabel.replace(/^\S+\s+/, "");  // strip emoji
-  headerMode.textContent    = modeLabel;
+  headerMode.textContent    = `${modeLabel} · ${languageLabel}`;
 }
 
 /* ── Main: send question to /api/chat ─────────────────────────── */
@@ -333,6 +356,7 @@ async function sendQuestion(question) {
 
   const subject       = subjectSelect.value;
   const mode          = modeSelect.value;
+  const language      = languageSelect.value;
   const studentClass  = getSelectedClass();
 
   // Render user message
@@ -349,7 +373,7 @@ async function sendQuestion(question) {
     const response = await fetch(`${API_BASE}/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, subject, mode, class: studentClass, history: conversationHistory })
+      body: JSON.stringify({ question, subject, mode, language, class: studentClass, history: conversationHistory })
     });
 
     const data = await response.json();
@@ -370,6 +394,7 @@ async function sendQuestion(question) {
       if (currentChat.id === null) currentChat.title = makeChatTitle(question);
       currentChat.subject = subject;
       currentChat.mode = mode;
+      currentChat.language = language;
       currentChat.studentClass = studentClass;
       currentChat.history = [...conversationHistory];
       persistCurrentChat();
@@ -401,7 +426,8 @@ async function simplifyLastAnswer() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         text: lastAIAnswer,
-        subject: subjectSelect.value
+        subject: subjectSelect.value,
+        language: languageSelect.value
       })
     });
 
@@ -425,7 +451,15 @@ async function simplifyLastAnswer() {
   }
 }
 
-/* ── Sidebar toggle (mobile) ──────────────────────────────────── */
+/* ── Sidebar toggle ───────────────────────────────────────────── */
+// On mobile the sidebar is an off-canvas overlay (open/close). On desktop
+// it's always in-flow, so "toggling" instead retracts/expands its width.
+// One button (menuBtn, in the header) drives both, since the header stays
+// visible even when the sidebar itself is fully retracted.
+function isMobileViewport() {
+  return window.matchMedia("(max-width: 768px)").matches;
+}
+
 function openSidebar() {
   sidebar.classList.add("open");
   overlay.classList.add("show");
@@ -434,6 +468,26 @@ function openSidebar() {
 function closeSidebar() {
   sidebar.classList.remove("open");
   overlay.classList.remove("show");
+}
+
+function toggleSidebar() {
+  if (isMobileViewport()) {
+    sidebar.classList.contains("open") ? closeSidebar() : openSidebar();
+    return;
+  }
+  const collapsed = sidebar.classList.toggle("collapsed");
+  localStorage.setItem(SIDEBAR_KEY, collapsed ? "collapsed" : "expanded");
+}
+
+/* ── Settings modal ───────────────────────────────────────────── */
+function openSettings() {
+  settingsOverlay.hidden = false;
+  requestAnimationFrame(() => settingsOverlay.classList.add("show"));
+}
+
+function closeSettings() {
+  settingsOverlay.classList.remove("show");
+  setTimeout(() => { settingsOverlay.hidden = true; }, 200);
 }
 
 /* ═══════════════════════════════════════════════════
@@ -464,9 +518,6 @@ sendBtn.addEventListener("click", () => {
 // Simplify button
 simplifyBtn.addEventListener("click", simplifyLastAnswer);
 
-// Delete current chat
-clearBtn.addEventListener("click", deleteCurrentChat);
-
 // Dropdown changes → update header + keep current chat's saved subject/mode in sync
 subjectSelect.addEventListener("change", () => {
   updateHeader();
@@ -476,14 +527,33 @@ modeSelect.addEventListener("change", () => {
   updateHeader();
   currentChat.mode = modeSelect.value;
 });
+languageSelect.addEventListener("change", () => {
+  updateHeader();
+  currentChat.language = languageSelect.value;
+});
 
 // New chat button
 newChatBtn.addEventListener("click", startNewChat);
 
-// Chat history list — click an item to open it
+// Chat history list — click an item to open it, or its trash icon to delete it
 chatHistoryList.addEventListener("click", (e) => {
+  const deleteBtn = e.target.closest(".history-delete-btn");
+  if (deleteBtn) {
+    e.stopPropagation();
+    deleteChat(deleteBtn.dataset.id);
+    return;
+  }
   const item = e.target.closest(".history-item");
   if (!item) return;
+  openChat(item.dataset.id);
+});
+
+// Keyboard access for history items (they're divs with role="button")
+chatHistoryList.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const item = e.target.closest(".history-item");
+  if (!item) return;
+  e.preventDefault();
   openChat(item.dataset.id);
 });
 
@@ -496,21 +566,92 @@ classChips.forEach(chip => {
   });
 });
 
-// Mobile sidebar
-menuBtn.addEventListener("click", openSidebar);
+// Sidebar toggle (mobile off-canvas open/close, desktop retract/expand)
+menuBtn.addEventListener("click", toggleSidebar);
 sidebarToggle.addEventListener("click", closeSidebar);
 overlay.addEventListener("click", closeSidebar);
 
+// Settings modal (houses the Class + Language controls)
+settingsBtn.addEventListener("click", openSettings);
+settingsCloseBtn.addEventListener("click", closeSettings);
+settingsOverlay.addEventListener("click", (e) => {
+  if (e.target === settingsOverlay) closeSettings();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !settingsOverlay.hidden) closeSettings();
+});
+
 // Theme toggle (light/dark) — the actual <html data-theme> is already set
 // pre-paint by the inline script in index.html; this just flips + persists it.
-themeToggle.addEventListener("click", () => {
+// Where supported, wraps the swap in a circular "reveal" View Transition
+// centered on the toggle button; falls back to an instant swap otherwise.
+themeToggle.addEventListener("click", (e) => {
   const current = document.documentElement.getAttribute("data-theme");
   const next = current === "dark" ? "light" : "dark";
-  document.documentElement.setAttribute("data-theme", next);
-  localStorage.setItem(THEME_KEY, next);
+  const applyTheme = () => {
+    document.documentElement.setAttribute("data-theme", next);
+    localStorage.setItem(THEME_KEY, next);
+  };
+
+  if (!document.startViewTransition || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    applyTheme();
+    return;
+  }
+
+  const { clientX: x, clientY: y } = e;
+  const radius = Math.hypot(
+    Math.max(x, window.innerWidth - x),
+    Math.max(y, window.innerHeight - y)
+  );
+
+  const transition = document.startViewTransition(applyTheme);
+  transition.ready.then(() => {
+    document.documentElement.animate(
+      { clipPath: [`circle(0px at ${x}px ${y}px)`, `circle(${radius}px at ${x}px ${y}px)`] },
+      { duration: 550, easing: "cubic-bezier(.22,.61,.36,1)", pseudoElement: "::view-transition-new(root)" }
+    );
+  });
+});
+
+/* ── Ripple micro-interaction on interactive buttons ─────────── */
+function attachRipple(el) {
+  el.addEventListener("click", (e) => {
+    if (el.disabled) return;
+    const rect = el.getBoundingClientRect();
+    const size = Math.max(rect.width, rect.height);
+    const ripple = document.createElement("span");
+    ripple.className = "ripple";
+    ripple.style.width = ripple.style.height = `${size}px`;
+    ripple.style.left = `${e.clientX - rect.left - size / 2}px`;
+    ripple.style.top = `${e.clientY - rect.top - size / 2}px`;
+    el.appendChild(ripple);
+    ripple.addEventListener("animationend", () => ripple.remove());
+  });
+}
+[sendBtn, newChatBtn, simplifyBtn].forEach(attachRipple);
+
+/* ── Ambient background parallax — blobs drift toward the pointer ──── */
+let parallaxRaf = null;
+window.addEventListener("pointermove", (e) => {
+  if (parallaxRaf) return;
+  parallaxRaf = requestAnimationFrame(() => {
+    const nx = (e.clientX / window.innerWidth - 0.5) * 2;   // -1..1
+    const ny = (e.clientY / window.innerHeight - 0.5) * 2;  // -1..1
+    blobs.forEach((blob, i) => {
+      const strength = (i + 1) * 10;
+      blob.style.setProperty("--px", (nx * strength).toFixed(1));
+      blob.style.setProperty("--py", (ny * strength).toFixed(1));
+    });
+    parallaxRaf = null;
+  });
 });
 
 /* ── Init ─────────────────────────────────────────────────── */
 updateHeader();
 renderHistoryList();
 questionInput.focus();
+
+// Restore the desktop sidebar's collapsed/expanded state from last session.
+if (!isMobileViewport() && localStorage.getItem(SIDEBAR_KEY) === "collapsed") {
+  sidebar.classList.add("collapsed");
+}
