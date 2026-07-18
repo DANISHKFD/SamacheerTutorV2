@@ -57,6 +57,26 @@ MODE_MODIFIERS = {
     )
 }
 
+# ── Response language ────────────────────────────────────────
+
+LANGUAGE_INSTRUCTIONS = {
+    "english": "Write your entire answer in clear, simple English.",
+    "tamil": (
+        "Write your ENTIRE answer in Tamil (தமிழ்), using natural, everyday Tamil "
+        "that a Class 8–10 Tamil Nadu student speaks at home and in school. "
+        "Do not mix in English sentences or paragraphs. "
+        "You may keep numbers, mathematical symbols/formulas, and proper nouns "
+        "(e.g. names, place names) as-is, but explain everything else fully in Tamil, "
+        "including subject terms — give the Tamil term and, in brackets, the English "
+        "term the student would see in their textbook, e.g. ஒளிச்சேர்க்கை (Photosynthesis)."
+    ),
+}
+
+
+def get_language_instruction(language: str) -> str:
+    """Return the response-language instruction block for the given language code."""
+    return LANGUAGE_INSTRUCTIONS.get(language, LANGUAGE_INSTRUCTIONS["english"])
+
 
 # ─────────────────────────────────────────────────────────
 # PUBLIC FUNCTION
@@ -84,23 +104,92 @@ def _build_history_block(history: list[dict] | None) -> str:
     )
 
 
+def _build_cross_chat_block(memory: list[dict] | None) -> str:
+    """
+    Render snippets from the student's OTHER saved chats as background context.
+
+    Unlike `history` (the live back-and-forth of the current conversation),
+    this is context the model should treat as recalled memory — useful if the
+    student references something from a past session, but not part of the
+    current turn-taking flow.
+    """
+    if not memory:
+        return ""
+
+    lines = []
+    last_title = None
+    for turn in memory:
+        text = (turn.get("text") or "").strip()
+        if not text:
+            continue
+        title = turn.get("chatTitle") or "an earlier chat"
+        if title != last_title:
+            lines.append(f'\n[From "{title}"]')
+            last_title = title
+        speaker = "Student" if turn.get("role") == "user" else "Vidya"
+        lines.append(f"{speaker}: {text}")
+
+    if not lines:
+        return ""
+
+    return (
+        "\n=== MEMORY FROM THE STUDENT'S OTHER CHATS ===\n"
+        "You DO have memory of this exact student's past sessions — it is real, "
+        "accurate content from their earlier chats with you, shown below. If the "
+        "student's question relates to it, use it directly and confidently, the "
+        "way a tutor naturally recalls what a student told them before.\n"
+        "NEVER say things like \"I don't have memory of past conversations\", "
+        "\"I don't have access to our chat history\", or \"as an AI I can't "
+        "remember\" — that is FALSE here; the memory below is genuinely theirs.\n"
+        "This is background, not the live conversation, so don't treat it as "
+        "something that just happened — only bring it up if it's actually "
+        "relevant to the current question.\n"
+        + "\n".join(lines)
+        + "\n"
+    )
+
+
+EXERCISE_LOOKUP_INSTRUCTIONS = """
+The TEXTBOOK CONTEXT below was looked up directly by exercise/question number,
+not by topic search — it contains the exact textbook question(s) the student
+asked about.
+1. Briefly quote/restate the exact question text first, so the student can
+   confirm you found the right one (this is different from repeating their
+   conversational phrasing — here it confirms which textbook problem you're
+   solving).
+2. Then solve it step by step following the subject instructions above.
+3. If the context contains multiple questions (the exact one wasn't found),
+   politely point out which questions ARE available in that exercise instead
+   of guessing.
+"""
+
+
 def build_prompt(
     question: str,
     chunks: list[str],
     subject: str = "science",
     mode: str = "easy",
+    language: str = "english",
     history: list[dict] | None = None,
+    cross_chat_memory: list[dict] | None = None,
+    is_exercise_lookup: bool = False,
 ) -> str:
     """
     Assemble the full prompt for Gemini.
 
     Args:
-        question : the student's question
-        chunks   : list of retrieved textbook passage strings
-        subject  : "maths" | "science" | "social"
-        mode     : "easy" | "detailed"
-        history  : prior turns in this conversation, e.g.
-                   [{"role": "user", "text": "..."}, {"role": "ai", "text": "..."}]
+        question           : the student's question
+        chunks              : list of retrieved textbook passage strings
+        subject             : "maths" | "science" | "social"
+        mode                : "easy" | "detailed"
+        language            : "english" | "tamil" — language of the answer itself
+        history             : prior turns in THIS conversation, e.g.
+                              [{"role": "user", "text": "..."}, {"role": "ai", "text": "..."}]
+        cross_chat_memory   : snippets pulled from the student's OTHER saved chats, e.g.
+                              [{"role": "user", "text": "...", "chatTitle": "..."}, ...]
+        is_exercise_lookup  : True when `chunks` came from a direct
+                              "Exercise X.Y, Question N" metadata lookup
+                              rather than semantic search
 
     Returns:
         A single formatted prompt string.
@@ -108,6 +197,8 @@ def build_prompt(
     # Fallback if subject key not found
     subject_instr = SUBJECT_INSTRUCTIONS.get(subject, SUBJECT_INSTRUCTIONS["science"])
     mode_modifier = MODE_MODIFIERS.get(mode, MODE_MODIFIERS["easy"])
+    language_instr = get_language_instruction(language)
+    exercise_instr = EXERCISE_LOOKUP_INSTRUCTIONS.strip() if is_exercise_lookup else ""
 
     # Join retrieved context chunks with separator
     context_block = "\n\n---\n\n".join(
@@ -115,6 +206,7 @@ def build_prompt(
     ) if chunks else "No specific textbook passage found."
 
     history_block = _build_history_block(history)
+    cross_chat_block = _build_cross_chat_block(cross_chat_memory)
 
     prompt = f"""=== ROLE ===
 You are "GemTutor", a warm and patient AI tutor for Tamil Nadu State Board students (Classes 8–10).
@@ -127,10 +219,13 @@ Jump straight into the answer, the way a teacher naturally would mid-conversatio
 
 === SUBJECT-SPECIFIC INSTRUCTIONS ===
 {subject_instr.strip()}
-
-=== LANGUAGE MODE ===
+{("\n=== EXERCISE LOOKUP INSTRUCTIONS ===\n" + exercise_instr + "\n") if exercise_instr else ""}
+=== ANSWER DEPTH ===
 {mode_modifier}
 
+=== RESPONSE LANGUAGE ===
+{language_instr}
+{cross_chat_block}
 === TEXTBOOK CONTEXT (use this to answer) ===
 {context_block}
 {history_block}

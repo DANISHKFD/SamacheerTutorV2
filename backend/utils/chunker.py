@@ -102,3 +102,96 @@ def chunk_by_paragraph(
         chunks.append(" ".join(buffer))
 
     return chunks
+
+
+# ── Maths-exercise-aware chunking ──────────────────────────
+
+_EXERCISE_HEADER_RE = re.compile(r"(?im)^\s*Exercise\s+(\d+\.\d+)\s*$")
+_QUESTION_START_RE = re.compile(r"(?m)^\s*(\d{1,2})\.\s*(.*)$")
+
+# A question buffer that grows past this many words is almost certainly
+# narrative text that drifted in after the exercise's last real question
+# (PDF extraction has no clean "end of exercise" marker), so we cut it
+# loose and fall back to narrative mode instead of swallowing a whole chapter.
+_MAX_QUESTION_WORDS = 150
+
+
+def chunk_maths_exercises(text: str) -> list[dict]:
+    """
+    Split a maths chapter into narrative chunks plus one chunk per
+    exercise question, tagged with which "Exercise X.Y" and question
+    number it belongs to — so a question like "Exercise 5.8, Q3" can be
+    looked up directly instead of relying on semantic search alone.
+
+    Args:
+        text : cleaned text with line breaks preserved (i.e. output of
+               clean_text(), NOT the whitespace-collapsed form)
+
+    Returns:
+        List of {"text", "exercise", "question_no"} dicts. "exercise" and
+        "question_no" are None for narrative (non-exercise) chunks.
+    """
+    narrative_buffer: list[str] = []
+    narrative_chunks: list[str] = []
+    exercise_chunks: list[dict] = []
+
+    current_exercise = None
+    current_question_no = None
+    current_question_lines: list[str] = []
+
+    def flush_question():
+        nonlocal current_question_lines, current_question_no
+        if current_exercise and current_question_no and current_question_lines:
+            qtext = re.sub(r"\s+", " ", " ".join(current_question_lines)).strip()
+            if qtext:
+                exercise_chunks.append({
+                    "text": f"[Exercise {current_exercise}, Question {current_question_no}] {qtext}",
+                    "exercise": current_exercise,
+                    "question_no": current_question_no,
+                })
+        current_question_lines = []
+        current_question_no = None
+
+    def flush_narrative():
+        nonlocal narrative_buffer
+        chunk_text = "\n\n".join(narrative_buffer).strip()
+        if chunk_text:
+            narrative_chunks.extend(chunk_by_paragraph(chunk_text))
+        narrative_buffer = []
+
+    for line in text.split("\n"):
+        header_match = _EXERCISE_HEADER_RE.match(line)
+        if header_match:
+            flush_question()
+            flush_narrative()
+            current_exercise = header_match.group(1)
+            continue
+
+        if current_exercise:
+            q_match = _QUESTION_START_RE.match(line)
+            if q_match:
+                flush_question()
+                current_question_no = q_match.group(1)
+                rest = q_match.group(2)
+                if rest.strip():
+                    current_question_lines.append(rest)
+            elif current_question_no is not None:
+                current_question_lines.append(line)
+                word_count = sum(len(l.split()) for l in current_question_lines)
+                if word_count > _MAX_QUESTION_WORDS:
+                    # Likely narrative that leaked past the exercise's end.
+                    flush_question()
+                    current_exercise = None
+                    narrative_buffer.append(line)
+            # else: stray text between the "Exercise X.Y" header and its
+            # first numbered question (e.g. instructions) — not useful
+            # for direct lookup, so it's dropped.
+        else:
+            narrative_buffer.append(line)
+
+    flush_question()
+    flush_narrative()
+
+    result = [{"text": t, "exercise": None, "question_no": None} for t in narrative_chunks]
+    result.extend(exercise_chunks)
+    return result
