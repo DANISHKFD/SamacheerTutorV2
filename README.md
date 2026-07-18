@@ -224,5 +224,5 @@ Simply append more text to `data/maths.txt`, `data/science.txt`, or `data/social
 python scripts/prepare_data.py
 python scripts/build_index.py
 ```
-
+test change
 The backend will automatically use the updated index on next restart.
