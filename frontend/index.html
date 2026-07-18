@@ -6,9 +6,16 @@
   <title>Gemtutor — AI Tutor for Tamil Nadu Students</title>
   <script>
     // Applied before first paint so there's no light/dark flash on load.
+    // localStorage can throw in some private-browsing modes — fall back to
+    // the OS preference (or light) rather than leaving <html> untagged.
     (function () {
-      var saved = localStorage.getItem("vidya_theme");
-      var theme = saved || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      var theme = "light";
+      try {
+        var saved = localStorage.getItem("vidya_theme");
+        theme = saved || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      } catch (e) {
+        theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      }
       document.documentElement.setAttribute("data-theme", theme);
     })();
   </script>
@@ -184,7 +191,7 @@
           </button>
         </div>
       </div>
-      <p class="disclaimer">Vidya uses Samacheer Kalvi textbook content. Always verify important answers with your teacher.</p>
+      <p class="disclaimer">GemTutor uses Samacheer Kalvi textbook content. Always verify important answers with your teacher.</p>
     </footer>
   </main>
 
@@ -220,6 +227,24 @@
             <button class="chip" data-class="8">Class 8</button>
             <button class="chip active" data-class="9">Class 9</button>
             <button class="chip" data-class="10">Class 10</button>
+          </div>
+        </div>
+
+        <!-- Past exam papers upload -->
+        <div class="control-group no-border">
+          <label class="control-label">📄 Past Exam Papers</label>
+          <p class="control-hint">Upload a PDF of a previous exam paper for the subject &amp; class above. If a student later asks a question that appeared in it, the answer gets flagged as an important question.</p>
+          <p class="exam-upload-target" id="examUploadTarget">Uploading for: Science · Class 9</p>
+          <input type="file" id="examPaperInput" accept="application/pdf" hidden />
+          <button class="exam-upload-btn" id="examPaperUploadBtn" type="button">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3v10M10 3l-3.5 3.5M10 3l3.5 3.5"/><path d="M3.5 13v2a1.5 1.5 0 001.5 1.5h10a1.5 1.5 0 001.5-1.5v-2"/></svg>
+            Upload PDF
+          </button>
+          <p class="exam-upload-status" id="examUploadStatus" hidden></p>
+
+          <p class="control-label exam-papers-label">Uploaded Papers</p>
+          <div class="exam-papers-list" id="examPapersList" aria-live="polite">
+            <p class="exam-papers-empty">No papers uploaded yet.</p>
           </div>
         </div>
       </div>

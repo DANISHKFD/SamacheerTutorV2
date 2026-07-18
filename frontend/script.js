@@ -39,6 +39,13 @@ const settingsBtn      = document.getElementById("settingsBtn");
 const settingsOverlay  = document.getElementById("settingsOverlay");
 const settingsCloseBtn = document.getElementById("settingsCloseBtn");
 const SIDEBAR_KEY      = "vidya_sidebar_collapsed";
+const examPaperInput     = document.getElementById("examPaperInput");
+const examPaperUploadBtn = document.getElementById("examPaperUploadBtn");
+const examUploadStatus   = document.getElementById("examUploadStatus");
+const examUploadTarget   = document.getElementById("examUploadTarget");
+const examPapersList     = document.getElementById("examPapersList");
+
+const SUBJECT_LABELS = { maths: "Mathematics", science: "Science", social: "Social Science" };
 
 let messageCount = 0; // drives the staggered pop-in delay on new bubbles
 
@@ -64,6 +71,43 @@ function pushHistory(role, text) {
   }
 }
 
+/* ── Safe localStorage wrappers ───────────────────────────────
+   Private browsing (notably Safari) and "block all site data" settings
+   can make localStorage throw on ANY access, not just when full — and it
+   isn't scoped to one call site, so every read/write in this file funnels
+   through these two, degrading to "this session only" instead of an
+   uncaught exception breaking whatever feature happened to touch it. */
+let storageWarningShown = false;
+
+function warnStorageUnavailable() {
+  if (storageWarningShown) return;
+  storageWarningShown = true;
+  addMessage({
+    role: "ai",
+    text: "⚠️ Your browser is blocking local storage (common in private-browsing modes, or if site data is disabled in settings). Chat still works, but nothing will be saved once you close or refresh this page.",
+    isError: true
+  }, { skipSave: true });
+}
+
+function safeLocalStorageGet(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    warnStorageUnavailable();
+    return null;
+  }
+}
+
+function safeLocalStorageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch {
+    warnStorageUnavailable();
+    return false;
+  }
+}
+
 /* ── Cross-chat memory ─────────────────────────────────────────
    A rolling log of messages from EVERY saved chat (not just the one
    currently open), so the tutor can recall things discussed in other
@@ -76,16 +120,17 @@ const MAX_GLOBAL_MEMORY_ENTRIES = 40; // stored cap, ~20 turns across all chats
 const CROSS_CHAT_CONTEXT_LIMIT = 12;  // cap on what's actually sent per request
 
 function loadGlobalMemory() {
+  const raw = safeLocalStorageGet(GLOBAL_MEMORY_KEY);
+  if (!raw) return [];
   try {
-    const raw = localStorage.getItem(GLOBAL_MEMORY_KEY);
-    return raw ? JSON.parse(raw) : [];
+    return JSON.parse(raw);
   } catch {
-    return [];
+    return []; // corrupted entry — treat as empty rather than crash
   }
 }
 
 function saveGlobalMemory(memory) {
-  localStorage.setItem(GLOBAL_MEMORY_KEY, JSON.stringify(memory));
+  safeLocalStorageSet(GLOBAL_MEMORY_KEY, JSON.stringify(memory));
 }
 
 // Only messages that belong to an actually-saved chat are remembered, so a
@@ -112,16 +157,17 @@ function purgeGlobalMemoryForChat(chatId) {
 
 /* ── Chat history persistence ─────────────────────────────── */
 function loadChats() {
+  const raw = safeLocalStorageGet(CHATS_STORAGE_KEY);
+  if (!raw) return [];
   try {
-    const raw = localStorage.getItem(CHATS_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    return JSON.parse(raw);
   } catch {
-    return [];
+    return []; // corrupted entry — treat as empty rather than crash
   }
 }
 
 function saveChats() {
-  localStorage.setItem(CHATS_STORAGE_KEY, JSON.stringify(chats));
+  safeLocalStorageSet(CHATS_STORAGE_KEY, JSON.stringify(chats));
 }
 
 function getSelectedClass() {
@@ -213,6 +259,7 @@ function openChat(chatId) {
   languageSelect.value = chat.language || "english"; // older saved chats predate this field
   setSelectedClass(chat.studentClass || "9");
   updateHeader();
+  updateExamUploadTarget();
 
   messagesEl.innerHTML = "";
   messageCount = 0;
@@ -316,7 +363,7 @@ function formatAIText(text) {
 }
 
 /* ── Render: add a message bubble to the chat ─────────────────── */
-function addMessage({ role, text, isError = false }, { skipSave = false } = {}) {
+function addMessage({ role, text, isError = false, important = false }, { skipSave = false } = {}) {
   // Remove welcome card on first real message
   const card = document.getElementById("welcomeCard");
   if (card) card.remove();
@@ -333,11 +380,17 @@ function addMessage({ role, text, isError = false }, { skipSave = false } = {}) 
     ? escapeHtml(text)           // user text: plain escaped
     : formatAIText(text);        // AI text: formatted HTML
 
+  // Small "i" badge in the bottom corner of AI answers that match a
+  // question from an uploaded past exam paper — hover to see why it matters.
+  const badgeHtml = (!isUser && important && !isError)
+    ? `<div class="important-badge-row"><span class="important-badge" tabindex="0" title="Important question — this appeared in a previous exam paper.">i</span></div>`
+    : "";
+
   messageEl.innerHTML = `
     <div class="message-avatar">${avatar}</div>
     <div class="message-body">
       <span class="message-name">${name}</span>
-      <div class="message-bubble${isError ? " error" : ""}">${bubbleContent}</div>
+      <div class="message-bubble${isError ? " error" : ""}">${bubbleContent}${badgeHtml}</div>
       <span class="message-time">${nowTime()}</span>
     </div>
   `;
@@ -346,7 +399,7 @@ function addMessage({ role, text, isError = false }, { skipSave = false } = {}) 
   scrollToBottom();
 
   if (!skipSave) {
-    currentChat.messages.push({ role, text, isError });
+    currentChat.messages.push({ role, text, isError, important });
   }
 
   return messageEl;
@@ -389,12 +442,25 @@ function setLoading(state) {
 }
 
 /* ── Update header labels when controls change ────────────────── */
+// Class lives inside the Settings modal, so without a header cue it's easy
+// to leave it on the wrong value without noticing — RAG retrieval AND
+// past-exam-question matching are both scoped to subject+class, so a stale
+// class silently returns the wrong (or no) results.
 function updateHeader() {
   const subjectLabel  = subjectSelect.options[subjectSelect.selectedIndex].text;
   const modeLabel     = modeSelect.options[modeSelect.selectedIndex].text;
   const languageLabel = languageSelect.options[languageSelect.selectedIndex].text;
   headerSubject.textContent = subjectLabel.replace(/^\S+\s+/, "");  // strip emoji
-  headerMode.textContent    = `${modeLabel} · ${languageLabel}`;
+  headerMode.textContent    = `Class ${getSelectedClass()} · ${modeLabel} · ${languageLabel}`;
+}
+
+/* ── Keep the exam-paper upload target label in sync ───────────────
+   A wrong subject/class here silently mis-tags every extracted question
+   (they just won't match later), so this stays visible right above the
+   upload button as a "measure twice" cue before the student clicks it. */
+function updateExamUploadTarget() {
+  const subjectLabel = subjectSelect.options[subjectSelect.selectedIndex].text.replace(/^\S+\s+/, "");
+  examUploadTarget.textContent = `Uploading for: ${subjectLabel} · Class ${getSelectedClass()}`;
 }
 
 /* ── Main: send question to /api/chat ─────────────────────────── */
@@ -416,28 +482,62 @@ async function sendQuestion(question) {
 
   setLoading(true);
 
+  // Three failure modes get three different messages, since "the server is
+  // down" and "the server crashed on something we sent" and "we got a good
+  // answer but choked on rendering it" all need different next steps:
+  let response;
   try {
     const crossChatMemory = getCrossChatMemory(currentChat.id);
-    const response = await fetch(`${API_BASE}/chat`, {
+    // Titles of every saved chat — a lightweight index so "what have we
+    // talked about" can be answered even for topics whose actual messages
+    // have already rolled off crossChatMemory's small window.
+    const chatTitles = chats.map(c => c.title);
+    response = await fetch(`${API_BASE}/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         question, subject, mode, language, class: studentClass,
-        history: conversationHistory, crossChatMemory
+        history: conversationHistory, crossChatMemory, chatTitles
       })
     });
+  } catch (err) {
+    // True network-level failure: server unreachable, offline, CORS, DNS.
+    addMessage({
+      role: "ai",
+      text: "⚠️ Could not connect to the AI Tutor backend.\n\nMake sure you have:\n1. Installed requirements.txt\n2. Added your Gemini API key to .env\n3. Run build_index.py\n4. Started the Flask server with: python backend/app.py",
+      isError: true
+    });
+    lastAIAnswer = "";
+    setLoading(false);
+    return;
+  }
 
-    const data = await response.json();
+  let data;
+  try {
+    data = await response.json();
+  } catch (err) {
+    // Server responded, but the body wasn't JSON — e.g. a reverse-proxy
+    // error page, or the server crashing outside our own error handlers.
+    addMessage({
+      role: "ai",
+      text: `⚠️ The server sent back an unexpected response (HTTP ${response.status}). Please try again in a moment.`,
+      isError: true
+    });
+    lastAIAnswer = "";
+    setLoading(false);
+    return;
+  }
 
+  try {
     if (!response.ok) {
-      // API returned an error object
+      // API returned a clean error object
       const errMsg = data.error || "Something went wrong. Please try again.";
       const hint   = data.hint ? `\n\n💡 Hint: ${data.hint}` : "";
       addMessage({ role: "ai", text: errMsg + hint, isError: true });
       lastAIAnswer = "";
     } else {
       lastAIAnswer = data.answer;
-      addMessage({ role: "ai", text: data.answer });
+      addMessage({ role: "ai", text: data.answer, important: !!data.important_question });
       simplifyBtn.disabled = false;
       pushHistory("user", question);
       pushHistory("ai", data.answer);
@@ -453,15 +553,11 @@ async function sendQuestion(question) {
       pushGlobalMemory(currentChat.id, currentChat.title, "user", question);
       pushGlobalMemory(currentChat.id, currentChat.title, "ai", data.answer);
     }
-
   } catch (err) {
-    // Network error — backend not running?
-    addMessage({
-      role: "ai",
-      text: "⚠️ Could not connect to the AI Tutor backend.\n\nMake sure you have:\n1. Installed requirements.txt\n2. Added your Gemini API key to .env\n3. Run build_index.py\n4. Started the Flask server with: python backend/app.py",
-      isError: true
-    });
-    lastAIAnswer = "";
+    // Defensive: a successful response shouldn't look like the request
+    // itself failed just because something broke while we rendered it.
+    console.error("Error handling chat response:", err);
+    addMessage({ role: "ai", text: "⚠️ Got a response, but something went wrong showing it. Please try again.", isError: true });
   } finally {
     setLoading(false);
   }
@@ -474,8 +570,9 @@ async function simplifyLastAnswer() {
   addMessage({ role: "user", text: "✨ Can you explain that in an even simpler way?" });
   setLoading(true);
 
+  let response;
   try {
-    const response = await fetch(`${API_BASE}/simplify`, {
+    response = await fetch(`${API_BASE}/simplify`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -484,9 +581,22 @@ async function simplifyLastAnswer() {
         language: languageSelect.value
       })
     });
+  } catch (err) {
+    addMessage({ role: "ai", text: "⚠️ Could not connect to the backend. Make sure it's running (python backend/app.py).", isError: true });
+    setLoading(false);
+    return;
+  }
 
-    const data = await response.json();
+  let data;
+  try {
+    data = await response.json();
+  } catch (err) {
+    addMessage({ role: "ai", text: `⚠️ The server sent back an unexpected response (HTTP ${response.status}). Please try again.`, isError: true });
+    setLoading(false);
+    return;
+  }
 
+  try {
     if (!response.ok) {
       addMessage({ role: "ai", text: data.error || "Could not simplify.", isError: true });
     } else {
@@ -500,9 +610,9 @@ async function simplifyLastAnswer() {
       pushGlobalMemory(currentChat.id, currentChat.title, "user", "Can you explain that in an even simpler way?");
       pushGlobalMemory(currentChat.id, currentChat.title, "ai", data.answer);
     }
-
   } catch (err) {
-    addMessage({ role: "ai", text: "⚠️ Could not connect to backend.", isError: true });
+    console.error("Error handling simplify response:", err);
+    addMessage({ role: "ai", text: "⚠️ Got a response, but something went wrong showing it. Please try again.", isError: true });
   } finally {
     setLoading(false);
   }
@@ -533,11 +643,13 @@ function toggleSidebar() {
     return;
   }
   const collapsed = sidebar.classList.toggle("collapsed");
-  localStorage.setItem(SIDEBAR_KEY, collapsed ? "collapsed" : "expanded");
+  safeLocalStorageSet(SIDEBAR_KEY, collapsed ? "collapsed" : "expanded");
 }
 
 /* ── Settings modal ───────────────────────────────────────────── */
 function openSettings() {
+  updateExamUploadTarget();
+  loadExamPapersList();
   settingsOverlay.hidden = false;
   requestAnimationFrame(() => settingsOverlay.classList.add("show"));
 }
@@ -545,6 +657,119 @@ function openSettings() {
 function closeSettings() {
   settingsOverlay.classList.remove("show");
   setTimeout(() => { settingsOverlay.hidden = true; }, 200);
+}
+
+/* ── Past exam paper upload ────────────────────────────────────
+   Sends a PDF of a previous exam paper to the backend, which extracts
+   its questions and indexes them (tagged to the currently selected
+   subject + class) so matching future questions get flagged in chat. */
+function setExamUploadStatus(message, isError = false) {
+  examUploadStatus.textContent = message;
+  examUploadStatus.hidden = !message;
+  examUploadStatus.classList.toggle("error", isError);
+}
+
+const MAX_PDF_BYTES = 20 * 1024 * 1024; // must match backend/app.py's MAX_CONTENT_LENGTH
+
+async function uploadExamPaper(file) {
+  if (!file) return;
+
+  // Catch the obvious cases client-side — instant feedback instead of a
+  // round trip that the backend would reject anyway (413 for size, 400 for
+  // type). "accept=application/pdf" on the file input steers most users
+  // right already, but doesn't stop someone picking "All files".
+  if (!file.name.toLowerCase().endsWith(".pdf")) {
+    setExamUploadStatus(`"${file.name}" isn't a PDF. Only PDF files are supported.`, true);
+    examPaperInput.value = "";
+    return;
+  }
+  if (file.size > MAX_PDF_BYTES) {
+    const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+    setExamUploadStatus(`"${file.name}" is ${sizeMB} MB — the maximum upload size is 20 MB.`, true);
+    examPaperInput.value = "";
+    return;
+  }
+
+  const subject = subjectSelect.value;
+  const studentClass = getSelectedClass();
+
+  setExamUploadStatus(`Reading "${file.name}"…`);
+  examPaperUploadBtn.disabled = true;
+
+  const formData = new FormData();
+  formData.append("pdf", file);
+  formData.append("subject", subject);
+  formData.append("class", studentClass);
+
+  let response;
+  try {
+    response = await fetch(`${API_BASE}/exam-papers/upload`, {
+      method: "POST",
+      body: formData
+    });
+  } catch (err) {
+    setExamUploadStatus("Could not connect to the backend.", true);
+    examPaperUploadBtn.disabled = false;
+    examPaperInput.value = "";
+    return;
+  }
+
+  let data;
+  try {
+    data = await response.json();
+  } catch (err) {
+    setExamUploadStatus(`The server sent back an unexpected response (HTTP ${response.status}). Please try again.`, true);
+    examPaperUploadBtn.disabled = false;
+    examPaperInput.value = "";
+    return;
+  }
+
+  try {
+    if (!response.ok) {
+      const hint = data.hint ? ` ${data.hint}` : "";
+      setExamUploadStatus((data.error || "Could not process this PDF.") + hint, true);
+    } else {
+      const subjectLabel = subjectSelect.options[subjectSelect.selectedIndex].text.replace(/^\S+\s+/, "");
+      setExamUploadStatus(`Added ${data.questions_added} of ${data.questions_found} question(s) found, tagged as ${subjectLabel} · Class ${studentClass}.`);
+      loadExamPapersList(); // refresh so the new/updated paper shows immediately
+    }
+  } catch (err) {
+    console.error("Error handling exam paper upload response:", err);
+    setExamUploadStatus("Uploaded, but something went wrong showing the result. Check the Uploaded Papers list below.", true);
+  } finally {
+    examPaperUploadBtn.disabled = false;
+    examPaperInput.value = ""; // allow re-selecting the same file later
+  }
+}
+
+/* Fetch + render the "Uploaded Papers" list in Settings. */
+async function loadExamPapersList() {
+  examPapersList.innerHTML = `<p class="exam-papers-empty">Loading…</p>`;
+  try {
+    const response = await fetch(`${API_BASE}/exam-papers/list`);
+    const data = await response.json();
+    renderExamPapersList(response.ok ? (data.papers || []) : []);
+  } catch (err) {
+    examPapersList.innerHTML = `<p class="exam-papers-empty">Could not load uploaded papers — is the backend running?</p>`;
+  }
+}
+
+function renderExamPapersList(papers) {
+  if (!papers.length) {
+    examPapersList.innerHTML = `<p class="exam-papers-empty">No papers uploaded yet.</p>`;
+    return;
+  }
+
+  examPapersList.innerHTML = papers.map(p => {
+    const subjectLabel = SUBJECT_LABELS[p.subject] || p.subject;
+    const count = p.question_count === 1 ? "1 question" : `${p.question_count} questions`;
+    return `
+      <div class="exam-paper-row">
+        <span class="exam-paper-meta">${escapeHtml(subjectLabel)} · Class ${escapeHtml(p.class)} · ${count}</span>
+        <span class="exam-paper-source">${escapeHtml(p.source || "")}</span>
+      </div>
+    `;
+  }).join("");
 }
 
 /* ═══════════════════════════════════════════════════
@@ -578,6 +803,7 @@ simplifyBtn.addEventListener("click", simplifyLastAnswer);
 // Dropdown changes → update header + keep current chat's saved subject/mode in sync
 subjectSelect.addEventListener("change", () => {
   updateHeader();
+  updateExamUploadTarget();
   currentChat.subject = subjectSelect.value;
 });
 modeSelect.addEventListener("change", () => {
@@ -620,6 +846,8 @@ classChips.forEach(chip => {
     classChips.forEach(c => c.classList.remove("active"));
     chip.classList.add("active");
     currentChat.studentClass = chip.dataset.class;
+    updateHeader();
+    updateExamUploadTarget();
   });
 });
 
@@ -638,6 +866,13 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !settingsOverlay.hidden) closeSettings();
 });
 
+// Past exam paper upload — click the styled button to open the file picker,
+// then upload as soon as a PDF is chosen.
+examPaperUploadBtn.addEventListener("click", () => examPaperInput.click());
+examPaperInput.addEventListener("change", () => {
+  uploadExamPaper(examPaperInput.files[0]);
+});
+
 // Theme toggle (light/dark) — the actual <html data-theme> is already set
 // pre-paint by the inline script in index.html; this just flips + persists it.
 // Where supported, wraps the swap in a circular "reveal" View Transition
@@ -647,7 +882,7 @@ themeToggle.addEventListener("click", (e) => {
   const next = current === "dark" ? "light" : "dark";
   const applyTheme = () => {
     document.documentElement.setAttribute("data-theme", next);
-    localStorage.setItem(THEME_KEY, next);
+    safeLocalStorageSet(THEME_KEY, next);
   };
 
   if (!document.startViewTransition || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -685,7 +920,7 @@ function attachRipple(el) {
     ripple.addEventListener("animationend", () => ripple.remove());
   });
 }
-[sendBtn, newChatBtn, simplifyBtn].forEach(attachRipple);
+[sendBtn, newChatBtn, simplifyBtn, examPaperUploadBtn].forEach(attachRipple);
 
 /* ── Ambient background parallax — blobs drift toward the pointer ──── */
 let parallaxRaf = null;
@@ -705,10 +940,11 @@ window.addEventListener("pointermove", (e) => {
 
 /* ── Init ─────────────────────────────────────────────────── */
 updateHeader();
+updateExamUploadTarget();
 renderHistoryList();
 questionInput.focus();
 
 // Restore the desktop sidebar's collapsed/expanded state from last session.
-if (!isMobileViewport() && localStorage.getItem(SIDEBAR_KEY) === "collapsed") {
+if (!isMobileViewport() && safeLocalStorageGet(SIDEBAR_KEY) === "collapsed") {
   sidebar.classList.add("collapsed");
 }

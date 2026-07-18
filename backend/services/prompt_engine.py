@@ -149,6 +149,52 @@ def _build_cross_chat_block(memory: list[dict] | None) -> str:
     )
 
 
+# ── Instructions for "what did we talk about" style questions ─────
+# Used INSTEAD OF the subject instructions above when the student is asking
+# about the conversation itself rather than a textbook topic — see
+# chat.py's _MEMORY_QUERY_RE for what triggers this.
+
+MEMORY_QUERY_INSTRUCTIONS = """
+The student is asking about YOUR CONVERSATION HISTORY with them, not a textbook topic.
+Follow these rules STRICTLY:
+1. Answer ONLY using the "CONVERSATION SO FAR", "MEMORY FROM THE STUDENT'S OTHER CHATS",
+   and "TOPICS FROM ALL THE STUDENT'S SAVED CHATS" sections below. Ignore any textbook
+   context — it is not relevant to this question.
+2. Be specific: name actual topics/questions from those sections rather than speaking
+   in generalities.
+3. Any section below marked "(nothing recorded yet)" is GENUINELY EMPTY — there is
+   nothing to recall from it. If ALL of the sections are empty like this, tell the
+   student plainly that this is your first exchange with them (or that you don't have
+   anything saved from earlier chats yet). Do NOT invent, guess, or hallucinate a topic
+   (e.g. do not say "we talked about photosynthesis" unless it is actually shown below).
+4. Keep it short and conversational — this is a recall, not a lesson.
+"""
+
+def _build_chat_titles_block(chat_titles: list[str] | None) -> str:
+    """
+    Render the titles of EVERY saved chat as a simple index, so "what have we
+    talked about" can be answered even for topics whose actual messages have
+    already rolled off the (much smaller) cross-chat memory window.
+    """
+    if not chat_titles:
+        return ""
+
+    seen = []
+    for title in chat_titles:
+        if title and title not in seen:
+            seen.append(title)
+
+    if not seen:
+        return ""
+
+    lines = "\n".join(f"- {t}" for t in seen)
+    return (
+        "\n=== TOPICS FROM ALL THE STUDENT'S SAVED CHATS (titles only) ===\n"
+        + lines
+        + "\n"
+    )
+
+
 EXERCISE_LOOKUP_INSTRUCTIONS = """
 The TEXTBOOK CONTEXT below was looked up directly by exercise/question number,
 not by topic search — it contains the exact textbook question(s) the student
@@ -173,6 +219,8 @@ def build_prompt(
     history: list[dict] | None = None,
     cross_chat_memory: list[dict] | None = None,
     is_exercise_lookup: bool = False,
+    is_memory_query: bool = False,
+    chat_titles: list[str] | None = None,
 ) -> str:
     """
     Assemble the full prompt for Gemini.
@@ -190,23 +238,62 @@ def build_prompt(
         is_exercise_lookup  : True when `chunks` came from a direct
                               "Exercise X.Y, Question N" metadata lookup
                               rather than semantic search
+        is_memory_query     : True when the student is asking about the
+                              CONVERSATION itself ("what did we talk about
+                              last time?") rather than a textbook topic —
+                              swaps in MEMORY_QUERY_INSTRUCTIONS and drops
+                              the textbook context section entirely, so RAG
+                              noise can't derail the answer
+        chat_titles         : titles of EVERY chat the student has saved —
+                              a lightweight index for recall questions,
+                              covering topics whose messages have already
+                              rolled off `cross_chat_memory`'s small window
 
     Returns:
         A single formatted prompt string.
     """
-    # Fallback if subject key not found
-    subject_instr = SUBJECT_INSTRUCTIONS.get(subject, SUBJECT_INSTRUCTIONS["science"])
-    mode_modifier = MODE_MODIFIERS.get(mode, MODE_MODIFIERS["easy"])
     language_instr = get_language_instruction(language)
-    exercise_instr = EXERCISE_LOOKUP_INSTRUCTIONS.strip() if is_exercise_lookup else ""
-
-    # Join retrieved context chunks with separator
-    context_block = "\n\n---\n\n".join(
-        [f"[Passage {i+1}]\n{chunk.strip()}" for i, chunk in enumerate(chunks)]
-    ) if chunks else "No specific textbook passage found."
-
     history_block = _build_history_block(history)
     cross_chat_block = _build_cross_chat_block(cross_chat_memory)
+
+    if is_memory_query:
+        # Recall-only mode: no subject pedagogy, no textbook context — just
+        # the conversation memory sections below. Empty sections get an
+        # EXPLICIT "(nothing recorded yet)" placeholder rather than being
+        # omitted, so the model has concrete grounding to admit there's
+        # nothing to recall instead of guessing a plausible-sounding topic.
+        main_instr_block = f"""=== INSTRUCTIONS ===
+{MEMORY_QUERY_INSTRUCTIONS.strip()}
+"""
+        textbook_section = ""
+        chat_titles_block = _build_chat_titles_block(chat_titles) or (
+            "\n=== TOPICS FROM ALL THE STUDENT'S SAVED CHATS ===\n(nothing recorded yet)\n"
+        )
+        cross_chat_block = cross_chat_block or (
+            "\n=== MEMORY FROM THE STUDENT'S OTHER CHATS ===\n(nothing recorded yet)\n"
+        )
+        history_block = history_block or (
+            "\n=== CONVERSATION SO FAR ===\n(nothing recorded yet — this is the first message in this chat)\n"
+        )
+    else:
+        subject_instr = SUBJECT_INSTRUCTIONS.get(subject, SUBJECT_INSTRUCTIONS["science"])
+        mode_modifier = MODE_MODIFIERS.get(mode, MODE_MODIFIERS["easy"])
+        exercise_instr = EXERCISE_LOOKUP_INSTRUCTIONS.strip() if is_exercise_lookup else ""
+
+        context_block = "\n\n---\n\n".join(
+            [f"[Passage {i+1}]\n{chunk.strip()}" for i, chunk in enumerate(chunks)]
+        ) if chunks else "No specific textbook passage found."
+
+        main_instr_block = f"""=== SUBJECT-SPECIFIC INSTRUCTIONS ===
+{subject_instr.strip()}
+{("\n=== EXERCISE LOOKUP INSTRUCTIONS ===\n" + exercise_instr + "\n") if exercise_instr else ""}
+=== ANSWER DEPTH ===
+{mode_modifier}
+"""
+        textbook_section = f"""=== TEXTBOOK CONTEXT (use this to answer) ===
+{context_block}
+"""
+        chat_titles_block = ""
 
     prompt = f"""=== ROLE ===
 You are "GemTutor", a warm and patient AI tutor for Tamil Nadu State Board students (Classes 8–10).
@@ -217,23 +304,16 @@ NEVER restate, paraphrase, or summarise the student's question back to them befo
 (e.g. do NOT start with "You're asking about...", "You are asking why...", "Great question about...").
 Jump straight into the answer, the way a teacher naturally would mid-conversation.
 
-=== SUBJECT-SPECIFIC INSTRUCTIONS ===
-{subject_instr.strip()}
-{("\n=== EXERCISE LOOKUP INSTRUCTIONS ===\n" + exercise_instr + "\n") if exercise_instr else ""}
-=== ANSWER DEPTH ===
-{mode_modifier}
-
+{main_instr_block}
 === RESPONSE LANGUAGE ===
 {language_instr}
-{cross_chat_block}
-=== TEXTBOOK CONTEXT (use this to answer) ===
-{context_block}
-{history_block}
+{chat_titles_block}{cross_chat_block}
+{textbook_section}{history_block}
 === STUDENT'S QUESTION ===
 {question.strip()}
 
 === YOUR ANSWER ===
-(Answer below — follow the subject instructions exactly)
+(Answer below — follow the instructions above exactly)
 """
 
     return prompt

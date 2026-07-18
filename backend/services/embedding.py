@@ -21,7 +21,18 @@ def _get_model() -> SentenceTransformer:
     global _model
     if _model is None:
         print(f"[Embedding] Loading model '{MODEL_NAME}' … (first run may take a moment)")
-        _model = SentenceTransformer(MODEL_NAME)
+        try:
+            _model = SentenceTransformer(MODEL_NAME)
+        except Exception as e:
+            # Most common cause: no internet on first run, when the model
+            # still needs to be downloaded from Hugging Face. Re-raise with
+            # a message that actually points at the fix, since the raw
+            # exception from deep inside the download stack usually doesn't.
+            raise RuntimeError(
+                f"Could not load the embedding model '{MODEL_NAME}'. This is usually "
+                "caused by no internet connection on first run (the model needs to "
+                f"download once, ~80MB). Original error: {e}"
+            ) from e
         print(f"[Embedding] Model loaded. Embedding dim: {_model.get_sentence_embedding_dimension()}")
     return _model
 
