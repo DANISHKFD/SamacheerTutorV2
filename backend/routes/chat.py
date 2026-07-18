@@ -9,6 +9,7 @@ from flask import Blueprint, request, jsonify
 from services.rag import search_index, find_exercise_chunks
 from services.prompt_engine import build_prompt, get_language_instruction
 from services.ai_client import ask_gemini
+from services.exam_papers import is_important_question
 
 chat_bp = Blueprint("chat", __name__)
 
@@ -22,11 +23,29 @@ MAX_HISTORY_TEXT_LEN = 2000
 MAX_CROSS_CHAT_ENTRIES = 12
 MAX_CHAT_TITLE_LEN = 80
 
+# Just the list of titles from EVERY saved chat (not the message content),
+# so "what have we talked about" can be answered even for chats whose actual
+# messages have rolled off the crossChatMemory window above.
+MAX_CHAT_TITLES = 30
+
 # Recognise "Exercise 5.8" / "exercise no. 5.8" and "question 3" / "Q3" /
 # "problem 3" so we can look the question up directly instead of relying
 # on semantic search over noisy, PDF-extracted maths text.
 _EXERCISE_REF_RE = re.compile(r"exercise\s*(?:no\.?|number)?\s*(\d+\.\d+)", re.I)
 _QUESTION_REF_RE = re.compile(r"(?:question|problem|q)\.?\s*(?:no\.?|number)?\s*#?\s*(\d{1,2})\b", re.I)
+
+# Recognise questions ABOUT the conversation itself ("what did we talk about
+# last time?", "do you remember my last question?") rather than a textbook
+# topic. These should be answered from history/cross-chat memory only — not
+# from a textbook RAG search, which would return irrelevant passages and
+# push the model to "teach" from them instead of just recalling.
+_MEMORY_QUERY_RE = re.compile(
+    r"(what (did|have) (we|i|you)\b[^.?!]{0,25}\b(talk|discuss|cover|say|ask)|"
+    r"\b(previous|last|earlier|past)\s+(conversation|chat|session|question)s?\b|"
+    r"\bdo you remember\b|\bcan you remember\b|\bremind me what\b|"
+    r"\bsummari[sz]e our (conversation|chat)\b)",
+    re.I,
+)
 
 
 def _extract_exercise_reference(question: str):
@@ -79,6 +98,19 @@ def _sanitize_cross_chat_memory(raw_memory) -> list[dict]:
     return cleaned
 
 
+def _sanitize_chat_titles(raw_titles) -> list[str]:
+    """Validate and trim the client-supplied list of all saved chat titles."""
+    if not isinstance(raw_titles, list):
+        return []
+
+    cleaned = []
+    for title in raw_titles[:MAX_CHAT_TITLES]:
+        if isinstance(title, str) and title.strip():
+            cleaned.append(title.strip()[:MAX_CHAT_TITLE_LEN])
+
+    return cleaned
+
+
 @chat_bp.route("/chat", methods=["POST"])
 def chat():
     """
@@ -91,10 +123,11 @@ def chat():
             "language": "english",          # english | tamil — language of the answer
             "class":    "9",                # 8 | 9 | 10 (defaults to 9)
             "history":  [{"role": "user", "text": "..."}, {"role": "ai", "text": "..."}],
-            "crossChatMemory": [{"role": "user", "text": "...", "chatTitle": "..."}]
+            "crossChatMemory": [{"role": "user", "text": "...", "chatTitle": "..."}],
+            "chatTitles": ["Photosynthesis basics", "Triangle exercise 5.8", ...]
         }
     Returns:
-        { "answer": "...", "chunks_used": [...] }
+        { "answer": "...", "chunks_used": [...], "important_question": bool }
     """
     data = request.get_json(silent=True)
 
@@ -109,6 +142,7 @@ def chat():
     student_class = str(data.get("class", "9")).strip()
     history     = _sanitize_history(data.get("history"))
     cross_chat_memory = _sanitize_cross_chat_memory(data.get("crossChatMemory"))
+    chat_titles = _sanitize_chat_titles(data.get("chatTitles"))
 
     if not question:
         return jsonify({"error": "Field 'question' is required."}), 400
@@ -127,31 +161,50 @@ def chat():
     standard = f"standard_{student_class}"
 
     # ── 2. Retrieve relevant chunks via RAG ───────────────
+    # Skip entirely for "what did we talk about" style questions — they're
+    # about the CONVERSATION, not the textbook, so a semantic search would
+    # just surface irrelevant passages and drag the model into "teaching"
+    # from them instead of recalling history/cross-chat memory.
+    is_memory_query = bool(_MEMORY_QUERY_RE.search(question))
     is_exercise_lookup = False
     chunks = []
-    try:
-        exercise, question_no = (None, None)
-        if subject == "maths":
-            exercise, question_no = _extract_exercise_reference(question)
+    if not is_memory_query:
+        try:
+            exercise, question_no = (None, None)
+            if subject == "maths":
+                exercise, question_no = _extract_exercise_reference(question)
 
-        if exercise:
-            chunks = find_exercise_chunks(standard=standard, exercise=exercise, question_no=question_no)
-            is_exercise_lookup = bool(chunks)
+            if exercise:
+                chunks = find_exercise_chunks(standard=standard, exercise=exercise, question_no=question_no)
+                is_exercise_lookup = bool(chunks)
 
-        if not chunks:
-            chunks = search_index(question, subject=subject, standard=standard, top_k=3)
-    except FileNotFoundError as e:
-        return jsonify({
-            "error": str(e),
-            "hint": "Run scripts/build_index.py first to generate the FAISS index."
-        }), 503
-    except Exception as e:
-        return jsonify({"error": f"RAG retrieval failed: {str(e)}"}), 500
+            if not chunks:
+                chunks = search_index(question, subject=subject, standard=standard, top_k=3)
+        except FileNotFoundError as e:
+            return jsonify({
+                "error": str(e),
+                "hint": "Run scripts/build_index.py first to generate the FAISS index."
+            }), 503
+        except Exception as e:
+            return jsonify({"error": f"RAG retrieval failed: {str(e)}"}), 500
+
+    # ── 2b. Check whether this matches a question from an uploaded past
+    #        exam paper for this subject + class ──
+    # Best-effort: this is a nice-to-have flag, not core to answering the
+    # question, so a failure here (e.g. a corrupted exam index file) should
+    # never break the chat response itself.
+    important_question = False
+    if not is_memory_query:
+        try:
+            important_question = is_important_question(question, subject=subject, standard=standard)
+        except Exception as e:
+            print(f"[chat] is_important_question failed (non-fatal): {e}")
 
     # ── 3. Build subject-aware prompt (includes conversation memory) ──
     prompt = build_prompt(
         question, chunks, subject=subject, mode=mode, language=language, history=history,
         cross_chat_memory=cross_chat_memory, is_exercise_lookup=is_exercise_lookup,
+        is_memory_query=is_memory_query, chat_titles=chat_titles,
     )
 
     # ── 4. Call Gemini ────────────────────────────────────
@@ -162,7 +215,8 @@ def chat():
 
     return jsonify({
         "answer": answer,
-        "chunks_used": chunks          # handy for debugging / transparency
+        "chunks_used": chunks,          # handy for debugging / transparency
+        "important_question": important_question
     })
 
 

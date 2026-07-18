@@ -427,6 +427,100 @@ body {
   color: white;
 }
 
+/* Past exam paper upload (Settings modal) */
+.control-hint {
+  font-size: 0.72rem;
+  color: var(--sidebar-text-faint);
+  line-height: 1.45;
+  margin: -2px 0 10px;
+}
+
+.exam-upload-target {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--accent-soft-text);
+  background: var(--overlay-1);
+  border: 1px solid var(--overlay-2);
+  border-radius: var(--radius-full);
+  padding: 4px 10px;
+  margin-bottom: 10px;
+}
+
+.exam-upload-btn {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--overlay-1);
+  border: 1px solid var(--overlay-2);
+  border-radius: var(--radius-sm);
+  color: var(--sidebar-text);
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s var(--ease-out);
+}
+
+.exam-upload-btn svg { width: 16px; height: 16px; flex-shrink: 0; }
+
+.exam-upload-btn:hover:not(:disabled) { border-color: var(--teal); color: var(--teal); }
+.exam-upload-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.exam-upload-status {
+  font-size: 0.72rem;
+  color: var(--sidebar-text-soft);
+  margin-top: 8px;
+  line-height: 1.4;
+}
+.exam-upload-status.error { color: var(--danger-text); }
+.exam-upload-status[hidden] { display: none; }
+
+/* Uploaded past exam papers list */
+.exam-papers-label { margin-top: 16px; }
+
+.exam-papers-list {
+  max-height: 180px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.exam-paper-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  background: var(--overlay-1);
+  border: 1px solid var(--overlay-2);
+  border-radius: var(--radius-sm);
+}
+
+.exam-paper-meta {
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--sidebar-text);
+}
+
+.exam-paper-source {
+  font-size: 0.68rem;
+  color: var(--sidebar-text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.exam-papers-empty {
+  font-size: 0.72rem;
+  color: var(--sidebar-text-faint);
+  padding: 4px 2px;
+}
+
 /* New chat button */
 .new-chat-wrap {
   padding: 16px 20px 4px;
@@ -891,6 +985,40 @@ body {
   border: 1px solid rgba(230,57,70,0.3) !important;
   color: var(--error) !important;
   box-shadow: none !important;
+}
+
+/* "Important question" badge — small "i" pinned to the bottom-right of an
+   AI answer that matches a question from an uploaded past exam paper. */
+.important-badge-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.important-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--overlay-2);
+  border: 1px solid var(--border-color);
+  color: var(--accent-soft-text);
+  font-size: 0.7rem;
+  font-weight: 800;
+  font-style: italic;
+  font-family: Georgia, 'Times New Roman', serif;
+  cursor: help;
+  transition: all 0.2s var(--ease-out);
+}
+
+.important-badge:hover,
+.important-badge:focus-visible {
+  background: var(--teal);
+  border-color: var(--teal);
+  color: white;
+  outline: none;
 }
 
 /* Timestamp */

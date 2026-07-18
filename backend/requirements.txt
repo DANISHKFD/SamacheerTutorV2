@@ -16,6 +16,9 @@ google-generativeai==0.7.2
 # Vector database
 faiss-cpu==1.8.0          # use faiss-gpu if you have a CUDA GPU
 
+# PDF text extraction (past exam paper uploads)
+pypdf==4.3.1
+
 # Local sentence embeddings (free, no API key needed)
 sentence-transformers==3.0.1
 torch==2.3.1              # CPU-only build is fine for this project

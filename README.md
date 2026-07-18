@@ -14,16 +14,20 @@ ai-tutor/
 │   ├── config.py                    # Config (reads .env)
 │   ├── requirements.txt             # Python dependencies
 │   ├── .env.example                 # Copy to .env and add your key
-│   ├── index/                       # Generated FAISS index + chunk metadata
+│   ├── index/                       # Generated FAISS indexes + metadata
+│   │   ├── faiss.index / chunks.json            # Textbook RAG index
+│   │   └── exam_questions.index / .json         # Past exam paper questions
 │   │
 │   ├── routes/
-│   │   └── chat.py                  # /api/chat and /api/simplify endpoints
+│   │   ├── chat.py                  # /api/chat and /api/simplify endpoints
+│   │   └── exam_papers.py           # /api/exam-papers/upload endpoint
 │   │
 │   ├── services/
 │   │   ├── rag.py                   # FAISS index build + search + exercise lookup
 │   │   ├── embedding.py             # Sentence-transformers embeddings
 │   │   ├── ai_client.py             # Gemini API wrapper (retry/backoff, safety settings)
-│   │   └── prompt_engine.py         # Subject/mode/language-aware prompt builder
+│   │   ├── prompt_engine.py         # Subject/mode/language-aware prompt builder
+│   │   └── exam_papers.py           # PDF parsing + past-exam-question matching
 │   │
 │   └── utils/
 │       ├── chunker.py               # Paragraph + maths-exercise-aware chunking
@@ -134,6 +138,9 @@ Open `frontend/index.html` in your browser (double-click or use Live Server in V
 ```
 Student Question
       ↓
+  "What did we talk about before?" style question? → memory-recall mode
+      (skips RAG entirely; see "Conversation Memory" below)
+      ↓ (otherwise)
   Maths "Exercise X.Y, Q N"? → direct metadata lookup (skips semantic search)
       ↓ (otherwise)
   Embed question (sentence-transformers) → search FAISS
@@ -150,6 +157,32 @@ Student Question
 
 ---
 
+## 🧠 Conversation Memory
+
+Two layers of memory feed into every prompt, both persisted client-side in `localStorage` (no server-side database):
+
+- **In-chat history** — the last 12 turns of the *current* chat, sent as `history` so the tutor understands follow-ups ("explain that more", "why?").
+- **Cross-chat memory** — a rolling log of recent messages from the student's *other* saved chats (`crossChatMemory`), plus a plain list of *every* saved chat's title (`chatTitles`) so older topics aren't lost once their messages roll off that log. Together these let the tutor answer things like "what did we cover in my triangle chat?" even in a brand-new conversation.
+
+**Recall questions get special handling.** A question like *"what did we talk about last time?"* isn't about the textbook — so instead of running it through the normal FAISS/RAG search (which would return semantically-nearest-but-irrelevant textbook passages and push the model to "teach" from them), the backend detects this pattern (`_MEMORY_QUERY_RE` in `routes/chat.py`) and:
+1. Skips the textbook search entirely.
+2. Swaps in a recall-only instruction set (`MEMORY_QUERY_INSTRUCTIONS` in `services/prompt_engine.py`) telling the model to answer strictly from the history/cross-chat/chat-titles sections.
+3. Shows an explicit `(nothing recorded yet)` placeholder for any of those sections that are empty, so the model has something concrete to point to instead of guessing a plausible-sounding topic when there's genuinely nothing to recall.
+
+---
+
+## 📄 Uploading Past Exam Papers
+
+In the app, click **⚙️ Settings** in the sidebar (same place as the Class/Language pickers). Near the bottom is a **"📄 Past Exam Papers"** section with an **Upload PDF** button.
+
+- The upload is tagged with whatever **Subject** (sidebar dropdown) and **Class** (chip in the Settings modal) are currently selected — a live **"Uploading for: ..."** label above the button confirms this before you click, and the header always shows the active Class too, so a stale selection doesn't silently mis-tag things.
+- The PDF must have selectable text (not a scanned image) with numbered questions, e.g. `1.`, `2)`, `Q3.`.
+- On upload, the backend extracts each question, embeds it, and stores it in `backend/index/exam_questions.index`, tagged by subject + class.
+- From then on, if a student asks a question in chat that closely matches (semantically, not just word-for-word) one from an uploaded paper for the same subject + class, the AI's answer gets a small **"i"** badge in the bottom-right corner — hover it to see "Important question — this appeared in a previous exam paper."
+- The same Settings section has an **"Uploaded Papers"** list showing every paper indexed so far (subject, class, question count, filename) — so you can check what's actually there instead of guessing.
+
+---
+
 ## 💡 Features
 
 | Feature | Description |
@@ -162,10 +195,12 @@ Student Question
 | 🔢 Exercise lookup | Recognises "Exercise 5.8, Q3" style questions and answers the exact textbook problem |
 | 🧠 Conversation memory | Multi-turn chat history feeds back into the prompt for natural follow-ups |
 | 🗂 Cross-chat memory | The tutor can recall relevant snippets from the student's other saved chats |
+| 🧠 Recall questions | "What did we talk about last time?" bypasses RAG and answers from memory only — honestly, without guessing |
 | 🕘 Chat history & persistence | Multiple conversations saved locally (localStorage), switchable from the sidebar |
 | 🌗 Light / Dark theme | Theme toggle with no flash-of-wrong-theme on load |
 | 📱 Responsive UI | Collapsible sidebar, works on mobile and desktop |
 | 🔍 RAG | Answers grounded in actual Samacheer Kalvi textbook content |
+| 📄 Past exam paper flagging | Upload a past exam paper PDF; matching questions asked later get a hoverable "important question" badge |
 
 ---
 
@@ -177,6 +212,7 @@ Student Question
 | Embeddings | sentence-transformers (all-MiniLM-L6-v2) — **FREE, local** |
 | Vector DB | FAISS (faiss-cpu, flat L2 index) |
 | LLM | Google Gemini (`gemini-2.5-flash-lite`) |
+| PDF parsing | pypdf (past exam paper text extraction) |
 | Frontend | Vanilla HTML5, CSS3, JavaScript (no framework, no build step) |
 
 ---
@@ -196,13 +232,15 @@ Simple liveness check → `{ "status": "ok", "message": "AI Tutor backend is run
   "language": "english",          // english | tamil
   "class": "9",                   // 8 | 9 | 10 (defaults to 9)
   "history": [{ "role": "user", "text": "..." }, { "role": "ai", "text": "..." }],
-  "crossChatMemory": [{ "role": "user", "text": "...", "chatTitle": "..." }]
+  "crossChatMemory": [{ "role": "user", "text": "...", "chatTitle": "..." }],
+  "chatTitles": ["Photosynthesis basics", "Triangle exercise 5.8"]
 }
 
 // Response
 {
   "answer": "Photosynthesis is the process by which...",
-  "chunks_used": ["Photosynthesis is the process...", "..."]
+  "chunks_used": ["Photosynthesis is the process...", "..."],
+  "important_question": false   // true if this closely matches an uploaded past exam question
 }
 ```
 
@@ -221,6 +259,31 @@ Simple liveness check → `{ "status": "ok", "message": "AI Tutor backend is run
 }
 ```
 
+### POST /api/exam-papers/upload
+Multipart form-data (not JSON):
+```
+pdf     : the exam paper PDF file
+subject : maths | science | social
+class   : 8 | 9 | 10
+```
+```json
+// Response
+{
+  "questions_found": 24,
+  "questions_added": 19   // near-duplicates already indexed for this subject+class are skipped
+}
+```
+
+### GET /api/exam-papers/list
+```json
+// Response
+{
+  "papers": [
+    { "source": "10th-Social-Science-...pdf", "subject": "social", "standard": "standard_10", "class": "10", "question_count": 82 }
+  ]
+}
+```
+
 ---
 
 ## 🔧 Troubleshooting
@@ -234,6 +297,10 @@ Simple liveness check → `{ "status": "ok", "message": "AI Tutor backend is run
 **Slow first response** → The embedding model loads on first use. Subsequent responses are faster.
 
 **Gemini rate-limited (429)** → The backend automatically retries with backoff; if the daily free-tier quota is exhausted, requests will keep failing until it resets.
+
+**"No extractable text found in this PDF"** → The past exam paper PDF is likely scanned/image-only; only text-based PDFs are supported.
+
+**"Could not identify individual questions in this PDF"** → Questions must be numbered (`1.`, `2)`, `Q3.`) for the parser to split them.
 
 ---
 
