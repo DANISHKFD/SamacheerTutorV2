@@ -396,6 +396,23 @@ function addMessage({ role, text, isError = false, important = false }, { skipSa
   `;
 
   messagesEl.appendChild(messageEl);
+
+  // Render any $...$ / $$...$$ LaTeX in AI answers (maths formulas, angle
+  // notation, etc.) into proper math typesetting. window.renderMathInElement
+  // comes from the KaTeX auto-render script loaded in index.html.
+  if (!isUser && !isError && window.renderMathInElement) {
+    const bubbleEl = messageEl.querySelector(".message-bubble");
+    renderMathInElement(bubbleEl, {
+      delimiters: [
+        { left: "$$", right: "$$", display: true },
+        { left: "$", right: "$", display: false },
+        { left: "\\(", right: "\\)", display: false },
+        { left: "\\[", right: "\\]", display: true }
+      ],
+      throwOnError: false
+    });
+  }
+
   scrollToBottom();
 
   if (!skipSave) {
@@ -412,7 +429,7 @@ function showWelcomeCard() {
   card.id = "welcomeCard";
   card.innerHTML = `
     <div class="welcome-icon">🌟</div>
-    <h2>Vanakkam! I'm Vidya</h2>
+    <h2>Vanakkam! I'm GemTutor</h2>
     <p>Your AI tutor for Tamil Nadu State Board classes 8–10.<br/>
        Ask me anything about <strong>Maths</strong>, <strong>Science</strong>, or <strong>Social Science</strong>!</p>
     <div class="welcome-chips">

@@ -56,7 +56,7 @@ def _get_model():
         generation_config={
             "temperature": 0.4,       # lower = more factual, less hallucination
             "top_p": 0.9,
-            "max_output_tokens": 1024,
+            "max_output_tokens": 2048,
         },
         safety_settings=[
             # Keep the default safety settings; students use this app
